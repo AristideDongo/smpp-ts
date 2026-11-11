@@ -611,7 +611,7 @@ function decodeTlvValue(name: string, def: TlvDefinition, raw: Buffer, strict: b
 // Default instance
 // ---------------------------------------------------------------------------
 
-export const defaultCodec = new PduCodec();
+export const defaultCodec: PduCodec = new PduCodec();
 
 /** Encodes a PDU with the default codec. */
 export function encodePdu(input: PduInput): Buffer {

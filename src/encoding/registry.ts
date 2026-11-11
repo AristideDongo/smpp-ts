@@ -125,7 +125,7 @@ export class EncodingRegistry {
 }
 
 /** Default global registry. */
-export const encodings = new EncodingRegistry();
+export const encodings: EncodingRegistry = new EncodingRegistry();
 
 /** Encodes a text for a data_coding (strict: throws if it cannot be represented). */
 export function encodeText(text: string, dataCoding: number, registry: EncodingRegistry = encodings): Buffer {
