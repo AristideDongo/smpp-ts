@@ -286,6 +286,32 @@ const codec = new PduCodec({ customTlvs: [{ name: 'operator_ref', tag: 0x1501, t
 
 Before connecting to an operator, read the [production guide](docs/PRODUCTION.md): what to ask them, the settings that follow from it and the tests to run against their test SMSC.
 
+## Performance
+
+Measured with `npm run bench` (Node 24.21, Intel Core i5-8250U laptop, Linux). Client and server run **in the same process** on loopback TCP, so one CPU core does both sides: the figures are a lower bound for a client talking to a real SMSC. Median of 5 runs.
+
+| Benchmark | Result |
+|---|---|
+| `submit_sm`, window 1 | 9,900 msg/s |
+| `submit_sm`, window 10 | 12,700 msg/s |
+| `submit_sm`, window 50 | 13,600 msg/s |
+| Round trip, window 1 | p50 0.09 ms · p99 0.14 ms |
+| Encode `submit_sm` | 112,000 ops/s |
+| Decode `submit_sm` | 348,000 ops/s |
+| GSM7 encoding (160 characters) | 287,000 ops/s |
+| Split a UCS2 text into 6 parts | 46,000 ops/s |
+| Parse a DLR text | 157,000 ops/s |
+
+In practice, the operator's throughput limit (often 10 to 500 msg/s per bind) is reached long before the library's.
+
+Every pull request runs the benchmarks on the base branch and on the PR on the same CI runner, and fails if a throughput drops by more than 25%. Run them yourself:
+
+```sh
+npm run bench                                   # table
+node bench/run.mjs --json results.json          # JSON, after npm run build
+node bench/compare.mjs base.json head.json      # comparison, exit code 1 on regression
+```
+
 ## Development
 
 ```sh
@@ -294,6 +320,7 @@ npm run fuzz           # parser fuzzing, 1,000,000 iterations
 npm run coverage
 npm run test:runtime   # smoke test on the built package (also: bun / deno run -A test/runtime/smoke.mjs)
 npm run test:interop   # against a third-party SMSC, see test/interop/README.md
+npm run bench          # benchmarks (see Performance)
 npm run typecheck && npm run lint && npm run build
 ```
 
