@@ -4,6 +4,41 @@ These tests check `smpp-ts` against an SMSC that **is not** the library's own se
 
 They are not part of `npm test`: without `SMPP_INTEROP_URL`, they are skipped.
 
+## Compatibility matrix
+
+Run in CI on every pull request (`interop` job), against third-party implementations, not against the library itself:
+
+| Peer | Language | Role | What is tested | Status |
+|---|---|---|---|---|
+| [smscsim](https://github.com/ukarim/smscsim) | Go | SMSC (smpp-ts is the client) | `smsc.interop.ts`: bind, `enquire_link`, GSM7 / UCS2, long messages (`udh8`, `udh16`, `sar`), window, receipts | ✅ |
+| [jsmpp](https://github.com/opentelecoms-org/jsmpp) 3.0.2 | Java | SMSC (smpp-ts is the client) | same suite, against `servers/JsmppSmsc.java` | ✅ |
+| [python-smpplib](https://github.com/python-smpplib/python-smpplib) 2.2.4 | Python | client (smpp-ts is the server) | `server.interop.ts`: bind, short GSM7 and long UCS2 split by the peer, receipts, MO, unbind | ✅ |
+| [gosmpp](https://github.com/linxGnu/gosmpp) 0.3.1 | Go | client (smpp-ts is the server) | same scenario | ✅ |
+| Cloudhopper, Kannel, Jasmin | Java, C, Python | — | not covered yet | — |
+
+✅ = passes locally and in CI. The jsmpp jars are downloaded from Maven Central and checked against a SHA-256.
+
+## Server side: a third-party client against `SmppServer`
+
+`server.interop.ts` starts an `SmppServer`, then runs the command in `SMPP_INTEROP_CLIENT` with `<host> <port>` appended. The client follows `clients/expected.json` and prints a JSON summary on its last line.
+
+```sh
+pip install smpplib==2.2.4
+SMPP_INTEROP_CLIENT="python3 test/interop/clients/python_smpplib.py" npm run test:interop
+
+(cd test/interop/clients/gosmpp && go build -o gosmpp-client .)
+SMPP_INTEROP_CLIENT=test/interop/clients/gosmpp/gosmpp-client npm run test:interop
+```
+
+## Against jsmpp (Java 11+, no Maven needed)
+
+```sh
+curl -sSfLo jsmpp.jar https://repo1.maven.org/maven2/org/jsmpp/jsmpp/3.0.2/jsmpp-3.0.2.jar
+curl -sSfLo slf4j-api.jar https://repo1.maven.org/maven2/org/slf4j/slf4j-api/2.0.16/slf4j-api-2.0.16.jar
+java -cp jsmpp.jar:slf4j-api.jar test/interop/servers/JsmppSmsc.java 2775 &
+SMPP_INTEROP_URL=smpp://127.0.0.1:2775 npm run test:interop
+```
+
 ## Against the Docker simulator
 
 ```sh

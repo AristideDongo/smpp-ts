@@ -355,6 +355,9 @@ if (pdu.command === 'submit_sm') pdu.short_message; // typed
 const codec = new PduCodec({ customTlvs: [{ name: 'operator_ref', tag: 0x1501, type: 'cstring', max: 32 }] });
 ```
 
+## Interoperability
+
+Every pull request tests the library against implementations it did not write: the client against the **smscsim** (Go) and **jsmpp** (Java) SMSCs, the server against the **python-smpplib** (Python) and **gosmpp** (Go) clients. Matrix and instructions: [test/interop/README.md](test/interop/README.md).
 ## Command line
 
 The package ships a command with two tools, handy when you have no access to an operator's test SMSC yet.
@@ -420,7 +423,7 @@ npm test               # unit, property, fuzzing (20,000 iterations), integratio
 npm run fuzz           # parser fuzzing, 1,000,000 iterations
 npm run coverage
 npm run test:runtime   # smoke test on the built package (also: bun / deno run -A test/runtime/smoke.mjs)
-npm run test:interop   # against a third-party SMSC, see test/interop/README.md
+npm run test:interop   # against third-party SMSCs and clients, see test/interop/README.md
 npm run bench          # benchmarks (see Performance)
 npm run typecheck && npm run lint && npm run build
 ```
