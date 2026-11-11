@@ -60,7 +60,8 @@
     "test:interop": "vitest run --config vitest.interop.config.ts",
     "coverage": "vitest run --coverage",
     "fuzz": "FUZZ_RUNS=1000000 vitest run test/fuzz --testTimeout=3600000",
-    "prepublishOnly": "npm run typecheck && npm run test && npm run build"
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build",
+    "bench": "npm run build && node bench/run.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
