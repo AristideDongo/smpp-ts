@@ -316,6 +316,17 @@ if (pdu.command === 'submit_sm') pdu.short_message; // typed
 const codec = new PduCodec({ customTlvs: [{ name: 'operator_ref', tag: 0x1501, type: 'cstring', max: 32 }] });
 ```
 
+## Documentation
+
+API reference and guides: **https://aristidedongo.github.io/smpp-ts/**
+
+- [Sending one-time codes (OTP)](docs/guides/sending-otp.md)
+- [Bulk campaigns](docs/guides/bulk-campaigns.md)
+- [Receiving messages (MO)](docs/guides/receiving-messages.md)
+- [Delivery receipts](docs/guides/delivery-reports.md)
+- [Building an SMPP server](docs/guides/building-a-server.md)
+- [Going to production](docs/PRODUCTION.md)
+
 ## Going to production
 
 Before connecting to an operator, read the [production guide](docs/PRODUCTION.md): what to ask them, the settings that follow from it and the tests to run against their test SMSC.
@@ -355,6 +366,7 @@ npm run coverage
 npm run test:runtime   # smoke test on the built package (also: bun / deno run -A test/runtime/smoke.mjs)
 npm run test:interop   # against a third-party SMSC, see test/interop/README.md
 npm run bench          # benchmarks (see Performance)
+npm run docs           # API reference and guides in docs-site/
 npm run typecheck && npm run lint && npm run build
 ```
 

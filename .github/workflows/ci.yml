@@ -21,6 +21,8 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm audit --audit-level=moderate
+      # API reference and guides build without warnings (broken links, missing exports).
+      - run: npm run docs:check
       - run: npm run build
 
   test:

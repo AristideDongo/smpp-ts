@@ -184,3 +184,21 @@ export type { TimeoutKind } from './errors.js';
 export { REDACTED, maskNumber, pinoAdapter, redactPdu, silentLogger } from './logger.js';
 export type { Logger, RedactOptions } from './logger.js';
 export type { Metric, MetricName } from './metrics.js';
+
+// Types that appear in public signatures
+export type { FramerResult } from './codec/framer.js';
+export type { DestAddressDl, DestAddressSme } from './protocol/commands.js';
+export type { TlvValueOf } from './protocol/tlv.js';
+export type { PendingRequest, RequestPhase } from './session/window.js';
+export type { ProxyParseResult } from './transport/proxy-protocol.js';
+export type { DlrPduLike, FormatDlrOptions } from './utils/dlr.js';
+export type {
+  BuildPartsOptions,
+  BuiltParts,
+  DecodeContentOptions,
+  DecodedContent,
+  MessageContentInput,
+  ReassemblerOptions,
+  ReassemblySegment,
+} from './utils/multipart.js';
+export type { SplitResult } from './utils/segments.js';

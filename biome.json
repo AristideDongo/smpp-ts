@@ -1,6 +1,8 @@
 {
   "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
-  "files": { "ignore": ["dist", "coverage", "node_modules", "package.json", "package-lock.json"] },
+  "files": {
+    "ignore": ["dist", "coverage", "docs-site", "node_modules", "package.json", "package-lock.json"]
+  },
   "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2, "lineWidth": 110 },
   "javascript": { "formatter": { "quoteStyle": "single", "trailingCommas": "all", "semicolons": "always" } },
   "linter": {

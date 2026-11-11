@@ -1,0 +1,31 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "name": "smpp-ts",
+  "entryPoints": ["src/index.ts", "src/otel/index.ts"],
+  "out": "docs-site",
+  "readme": "README.md",
+  "projectDocuments": ["docs/guides/*.md", "docs/PRODUCTION.md"],
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "includeVersion": true,
+  "sort": ["kind", "instance-first", "alphabetical-ignoring-documents"],
+  "navigationLinks": {
+    "GitHub": "https://github.com/AristideDongo/smpp-ts",
+    "npm": "https://www.npmjs.com/package/smpp-ts"
+  },
+  "validation": {
+    "invalidLink": true,
+    "notDocumented": false,
+    "notExported": true
+  },
+  "treatWarningsAsErrors": false,
+  "intentionallyNotExported": [
+    "ClientInternals",
+    "RawCommand",
+    "PduBase",
+    "ParamsTuple",
+    "FieldValue",
+    "TlvEntry",
+    "RespParams"
+  ]
+}
