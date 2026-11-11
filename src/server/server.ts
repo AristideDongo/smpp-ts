@@ -183,6 +183,8 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
   private readonly perIp = new Map<string, number>();
   /** Binds being authenticated, per system_id: they hold a slot of maxSessionsPerSystemId. */
   private readonly pendingBinds = new Map<string, number>();
+  /** In-flight handler and authenticate() controllers, aborted by one shared `close` listener (#31). */
+  private readonly inflight = new WeakMap<ServerSession<Ctx>, Set<AbortController>>();
   private readonly handlers: Handlers<Ctx>;
   private rr = 0;
 
@@ -379,6 +381,14 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     });
     const ss = new ServerSession<Ctx>(session, ip);
     this.sessions.add(ss);
+    // One close listener aborts every in-flight handler, whatever inboundWindow is (#31).
+    const inflight = new Set<AbortController>();
+    this.inflight.set(ss, inflight);
+    session.once('close', () => {
+      const reason = new SmppError('SMPP_SESSION_CLOSED', 'session closed before the handler answered');
+      for (const ac of inflight) ac.abort(reason);
+      inflight.clear();
+    });
 
     // SEC-05: an unbound session is closed after bindTimeout.
     const bindTimer = setTimeout(() => {
@@ -599,21 +609,26 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
 
   // ---------------------------------------------------------------- helpers
 
-  /** AbortController aborted when the session closes; `dispose()` removes the listener. */
+  /**
+   * AbortController aborted when the session closes; `dispose()` forgets it.
+   * Shares the session's single close listener instead of adding one per call (#31).
+   */
   private abortOnClose(ss: ServerSession<Ctx>): {
     signal: AbortSignal;
     abort: (reason: unknown) => void;
     dispose: () => void;
   } {
     const ac = new AbortController();
-    const onClose = () =>
+    const inflight = this.inflight.get(ss);
+    if (ss.session.isClosed || !inflight) {
       ac.abort(new SmppError('SMPP_SESSION_CLOSED', 'session closed before the handler answered'));
-    if (ss.session.isClosed) onClose();
-    else ss.session.once('close', onClose);
+    } else {
+      inflight.add(ac);
+    }
     return {
       signal: ac.signal,
       abort: (reason) => ac.abort(reason),
-      dispose: () => ss.session.off('close', onClose),
+      dispose: () => inflight?.delete(ac),
     };
   }
 
