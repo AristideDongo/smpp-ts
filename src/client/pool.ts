@@ -105,10 +105,11 @@ export class SmppPool extends EventEmitter<PoolEvents> {
         ...(options.reassembly ? { reassembly: options.reassembly } : {}),
         ...(options.trackDeliveries
           ? {
-              tracker: new DeliveryTracker(
-                (status) => this.emitSafe('messageStatus', status),
-                options.trackDeliveries === true ? {} : options.trackDeliveries,
-              ),
+              tracker: new DeliveryTracker((status) => this.emitSafe('messageStatus', status), {
+                onStoreError: (err: unknown) =>
+                  this.logger.error('delivery tracker store failed', { error: toError(err).message }),
+                ...(options.trackDeliveries === true ? {} : options.trackDeliveries),
+              }),
             }
           : {}),
       },
@@ -361,6 +362,7 @@ export class SmppPool extends EventEmitter<PoolEvents> {
   }
 
   private nextConcatRef(): number {
+    if (this.options.concatReference) return this.options.concatReference() & 0xffff;
     this.concatRef = (this.concatRef + 1) & 0xffff;
     return this.concatRef;
   }

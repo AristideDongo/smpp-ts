@@ -26,7 +26,7 @@ import { COMMANDS, type RequestCommandName, responseNameOf } from '../protocol/c
 import { REGISTERED_DELIVERY } from '../protocol/constants.js';
 import { COMMAND_STATUS, type StatusCategory, defaultStatusClassifier } from '../protocol/status.js';
 import { type RateLimitOptions, TokenBucket } from '../session/rate-limiter.js';
-import { type RequestOptions, type ResponseOf, Session } from '../session/session.js';
+import { type RequestOptions, type ResponseOf, type SequenceGenerator, Session } from '../session/session.js';
 import { type BindMode, type SessionState, canSendInMode } from '../session/state-machine.js';
 import { RequestQueue, createPendingRequest } from '../session/window.js';
 import {
@@ -130,6 +130,13 @@ export interface SmppClientOptions {
   };
   /** Bytes allowed in the socket write buffer before the session is closed. Default: 1 MiB. */
   maxWriteBuffer?: number;
+  /** Source of `sequence_number` values (e.g. persisted across restarts). Default: counter per session. */
+  sequenceGenerator?: SequenceGenerator;
+  /**
+   * Source of concatenation references for long messages (0 to 65535; 8-bit UDH keeps the low byte).
+   * Default: a counter starting at a random value. Share one between clients that send to the same numbers.
+   */
+  concatReference?: () => number;
   reassembly?: { ttl?: number; maxBuffers?: number };
   /** Incoming GSM7 septets are packed. Default: false. */
   packedGsm7?: boolean;
@@ -271,10 +278,11 @@ export class SmppClient extends EventEmitter<ClientEvents> {
           ...(options.reassembly ? { reassembly: options.reassembly } : {}),
           ...(options.trackDeliveries
             ? {
-                tracker: new DeliveryTracker(
-                  (status) => this.emitSafe('messageStatus', status),
-                  options.trackDeliveries === true ? {} : options.trackDeliveries,
-                ),
+                tracker: new DeliveryTracker((status) => this.emitSafe('messageStatus', status), {
+                  onStoreError: (err: unknown) =>
+                    this.logger.error('delivery tracker store failed', { error: toError(err).message }),
+                  ...(options.trackDeliveries === true ? {} : options.trackDeliveries),
+                }),
               }
             : {}),
         },
@@ -284,7 +292,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
           partialMessage: (msg) => this.emitSafe('partialMessage', msg),
         },
       );
-    this.nextConcatRefFn = internals.nextConcatRef;
+    this.nextConcatRefFn = internals.nextConcatRef ?? options.concatReference;
     this.raw = this.buildRaw();
   }
 
@@ -334,6 +342,8 @@ export class SmppClient extends EventEmitter<ClientEvents> {
 
   private async establish(signal?: AbortSignal): Promise<void> {
     const o = this.options;
+    // Persisted tracking (trackDeliveries.store) is reloaded before the first bind: receipts may follow at once.
+    await this.inbound.tracker?.restore();
     const socket = await connectSocket(this.endpoint, {
       ...(o.connectTimeout !== undefined ? { connectTimeout: o.connectTimeout } : {}),
       ...(this.tlsOptions ? { tls: this.tlsOptions } : {}),
@@ -360,6 +370,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
         'enquireLinkTimeout',
         'unbindTimeout',
         'maxWriteBuffer',
+        'sequenceGenerator',
       ]),
       logContext: { systemId: o.bind.system_id, host: this.endpoint.host },
     });

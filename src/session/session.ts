@@ -75,6 +75,11 @@ export interface SessionOptions extends SessionTimeouts {
   classifyStatus?: StatusClassifier;
   /** Session identifier used in logs. */
   id?: string;
+  /**
+   * Source of `sequence_number` values (1 to 0x7FFFFFFF). Default: a counter starting at 1 in each session.
+   * Values in flight are skipped automatically.
+   */
+  sequenceGenerator?: SequenceGenerator;
   /** Context added to every log entry. */
   logContext?: Record<string, unknown>;
   /**
@@ -83,6 +88,14 @@ export interface SessionOptions extends SessionTimeouts {
    * Default: 1 MiB. 0 = no limit (reading is still paused while the buffer is full).
    */
   maxWriteBuffer?: number;
+}
+
+/**
+ * Pluggable `sequence_number` source, e.g. to keep numbering going across restarts.
+ * Called synchronously for every PDU sent: persist asynchronously (or by blocks) on your side.
+ */
+export interface SequenceGenerator {
+  next(): number;
 }
 
 export interface RequestOptions {
@@ -147,6 +160,7 @@ export class Session extends EventEmitter<SessionEvents> {
   private readonly maxWriteBuffer: number;
 
   private sequence = 0;
+  private readonly sequenceGenerator: SequenceGenerator | undefined;
   /** The socket write buffer is full: no new request is written and reading is paused (REL-09). */
   private writeBlocked = false;
   /** Paused by the owner (asynchronous bind, inbound window). */
@@ -189,6 +203,7 @@ export class Session extends EventEmitter<SessionEvents> {
       ...options.logContext,
     };
     this.maxWriteBuffer = options.maxWriteBuffer ?? 1024 * 1024;
+    this.sequenceGenerator = options.sequenceGenerator;
     this.framer = new Framer(this.codec.maxPduLength);
     this.closedPromise = new Promise((r) => {
       this.resolveClosed = r;
@@ -435,7 +450,14 @@ export class Session extends EventEmitter<SessionEvents> {
 
   private nextSequence(): number {
     for (let i = 0; i < 1000; i++) {
-      this.sequence = this.sequence >= MAX_SEQUENCE_NUMBER ? 1 : this.sequence + 1;
+      if (this.sequenceGenerator) {
+        const value = Math.trunc(Number(this.sequenceGenerator.next()));
+        // Out of range: wrap into 1..MAX_SEQUENCE_NUMBER rather than writing an invalid PDU.
+        this.sequence =
+          value >= 1 && value <= MAX_SEQUENCE_NUMBER ? value : (Math.abs(value) % MAX_SEQUENCE_NUMBER) + 1;
+      } else {
+        this.sequence = this.sequence >= MAX_SEQUENCE_NUMBER ? 1 : this.sequence + 1;
+      }
       if (!this.inflight.has(this.sequence)) return this.sequence;
     }
     return this.sequence;
