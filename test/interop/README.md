@@ -7,7 +7,7 @@ Ils ne font pas partie de `npm test` : sans `SMPP_INTEROP_URL`, ils sont ignoré
 ## Contre le simulateur Docker
 
 ```sh
-docker compose -f test/interop/docker-compose.yml up -d
+docker compose -f test/interop/docker-compose.yml up -d --build
 SMPP_INTEROP_URL=smpp://127.0.0.1:2775 npm run test:interop
 docker compose -f test/interop/docker-compose.yml down
 ```
