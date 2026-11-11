@@ -10,6 +10,9 @@
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "smpp-ts": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "import": {
@@ -61,7 +64,11 @@
     "coverage": "vitest run --coverage",
     "fuzz": "FUZZ_RUNS=1000000 vitest run test/fuzz --testTimeout=3600000",
     "prepublishOnly": "npm run typecheck && npm run test && npm run build",
-    "bench": "npm run build && node bench/run.mjs"
+    "bench": "npm run build && node bench/run.mjs",
+    "fixtures:build": "node test/fixtures/build.mjs"
+    "version-packages": "changeset version && node scripts/sync-jsr-version.mjs",
+    "jsr:check": "npx --yes jsr publish --dry-run --allow-slow-types --allow-dirty",
+    "jsr:publish": "npx --yes jsr publish --allow-slow-types"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

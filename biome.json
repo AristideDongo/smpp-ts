@@ -9,6 +9,7 @@
       "package-lock.json",
       "src/encoding/gsm7-national.ts"
     ]
+    "ignore": ["dist", "coverage", "node_modules", "package.json", "package-lock.json", "jsr.json"]
   },
   "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2, "lineWidth": 110 },
   "javascript": { "formatter": { "quoteStyle": "single", "trailingCommas": "all", "semicolons": "always" } },

@@ -37,6 +37,7 @@ export type {
   RequestOptions,
   ResponseOf,
   SessionEvents,
+  SequenceGenerator,
   SessionOptions,
   SessionTimeouts,
 } from './session/session.js';
@@ -158,7 +159,13 @@ export {
 } from './utils/dlr.js';
 export type { DeliveryReport, DlrStatus, MessageIdFormat, ParsedDlrText } from './utils/dlr.js';
 export { DeliveryTracker, isFinalDlrStatus } from './utils/delivery-tracker.js';
-export type { DeliveryTrackerOptions, MessageOutcome, MessageStatus } from './utils/delivery-tracker.js';
+export type {
+  DeliveryTrackerOptions,
+  DeliveryTrackerStore,
+  MessageOutcome,
+  MessageStatus,
+  TrackedMessageRecord,
+} from './utils/delivery-tracker.js';
 export { isNumericAddress, resolveAddress } from './utils/address.js';
 export type { AddressOptions, ResolvedAddress } from './utils/address.js';
 export { formatAbsoluteTime, formatRelativeTime, parseSmppTime, smppTimeToDate } from './utils/time.js';
