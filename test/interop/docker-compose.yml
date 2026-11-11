@@ -1,0 +1,9 @@
+# SMSC simulé tiers pour les tests d'interopérabilité.
+#   docker compose -f test/interop/docker-compose.yml up -d
+#   SMPP_INTEROP_URL=smpp://127.0.0.1:2775 npm run test:interop
+services:
+  smscsim:
+    image: ukarim/smscsim:latest
+    ports:
+      - "127.0.0.1:2775:2775"   # SMPP
+      - "127.0.0.1:12775:12775" # interface web (envoi de MO)

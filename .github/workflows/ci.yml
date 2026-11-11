@@ -38,6 +38,53 @@ jobs:
       - run: npm ci
       - run: npm run coverage
 
+  runtimes:
+    name: smoke (${{ matrix.runtime }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [bun, deno]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - if: matrix.runtime == 'bun'
+        uses: oven-sh/setup-bun@v2
+      - if: matrix.runtime == 'bun'
+        run: bun test/runtime/smoke.mjs
+      - if: matrix.runtime == 'deno'
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - if: matrix.runtime == 'deno'
+        run: deno run --allow-net --allow-read --allow-env test/runtime/smoke.mjs
+
+  interop:
+    runs-on: ubuntu-latest
+    # Simulateur tiers : un échec signale une variante à absorber, sans bloquer la PR
+    # tant que la suite n'a pas tourné au vert sur plusieurs exécutions.
+    continue-on-error: true
+    services:
+      smscsim:
+        image: ukarim/smscsim:latest
+        ports:
+          - 2775:2775
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:interop
+        env:
+          SMPP_INTEROP_URL: smpp://127.0.0.1:2775
+
   fuzz:
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
