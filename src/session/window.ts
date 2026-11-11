@@ -4,26 +4,26 @@ import type { CommandName } from '../protocol/commands.js';
 
 export type RequestPhase = 'queued' | 'inflight' | 'done';
 
-/** Requête en attente : dans la file, puis en vol, jusqu'à réponse, erreur ou timeout. */
+/** Pending request: queued, then in flight, until response, error or timeout. */
 export interface PendingRequest {
   readonly command: CommandName;
-  /** PDU encodé et validé ; le sequence_number est inscrit au moment de l'envoi. */
+  /** Encoded and validated PDU; the sequence_number is written at send time. */
   readonly encoded: Buffer;
   phase: RequestPhase;
-  /** Le PDU a été écrit sur le socket. */
+  /** The PDU was written to the socket. */
   written: boolean;
   sequence?: number;
   writtenAt?: number;
-  /** Requête de contrôle (bind, unbind, enquire_link) : hors fenêtre et hors file. */
+  /** Control request (bind, unbind, enquire_link): outside the window and the queue. */
   readonly control: boolean;
   readonly timeoutMs: number;
-  /** Échéance absolue (ms epoch) ; `Infinity` sans timeout. */
+  /** Absolute deadline (epoch ms); `Infinity` without a timeout. */
   readonly deadline: number;
   resolve(pdu: Pdu): void;
   reject(err: Error): void;
-  /** Retire la requête de la structure qui la détient (file ou fenêtre). */
+  /** Removes the request from whatever holds it (queue or window). */
   release?: () => void;
-  /** Annule le timer. */
+  /** Cancels the timer. */
   clear(): void;
 }
 
@@ -36,8 +36,8 @@ export interface CreateRequestOptions {
 }
 
 /**
- * Crée une requête dont la Promise aboutit toujours : réponse, erreur ou timeout (BUG-01).
- * Le timer démarre à la création : il couvre l'attente en file ET l'attente de réponse.
+ * Creates a request whose Promise always settles: response, error or timeout (BUG-01).
+ * The timer starts at creation: it covers both the queue wait AND the response wait.
  */
 export function createPendingRequest(opts: CreateRequestOptions): {
   request: PendingRequest;
@@ -88,7 +88,7 @@ export function createPendingRequest(opts: CreateRequestOptions): {
   return { request, promise };
 }
 
-/** Rejette une requête arrivée à échéance avec `SmppTimeoutError`. */
+/** Rejects an expired request with `SmppTimeoutError`. */
 export function expireRequest(request: PendingRequest, onTimeout?: (req: PendingRequest) => void): void {
   if (request.phase === 'done') return;
   const err = new SmppTimeoutError(
@@ -101,7 +101,7 @@ export function expireRequest(request: PendingRequest, onTimeout?: (req: Pending
   onTimeout?.(request);
 }
 
-/** File FIFO bornée des requêtes pas encore écrites (REL-03). */
+/** Bounded FIFO queue of requests not written yet (REL-03). */
 export class RequestQueue {
   private items: PendingRequest[] = [];
 
@@ -111,10 +111,10 @@ export class RequestQueue {
     return this.items.length;
   }
 
-  /** Ajoute une requête ; rejette immédiatement avec `SmppQueueFullError` si la file est pleine. */
+  /** Adds a request; rejects it at once with `SmppQueueFullError` if the queue is full. */
   push(req: PendingRequest): void {
     if (this.items.length >= this.maxSize) {
-      // La requête n'entre jamais dans la file : on désarme son timer pour qu'aucun rejet orphelin ne survienne.
+      // The request never enters the queue: disarm its timer so no orphan rejection fires.
       req.clear();
       req.phase = 'done';
       throw new SmppQueueFullError(this.maxSize);
@@ -139,7 +139,7 @@ export class RequestQueue {
     if (i !== -1) this.items.splice(i, 1);
   }
 
-  /** Rejette toutes les requêtes en file. */
+  /** Rejects every queued request. */
   rejectAll(makeError: (req: PendingRequest) => Error): void {
     const items = this.items;
     this.items = [];

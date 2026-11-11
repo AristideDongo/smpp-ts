@@ -1,10 +1,10 @@
 import { SmppStateError } from '../errors.js';
 import { type CommandName, isResponseCommand } from '../protocol/commands.js';
 
-/** États de session (REL-01). */
+/** Session states (REL-01). */
 export type SessionState = 'CLOSED' | 'OPEN' | 'BOUND_TX' | 'BOUND_RX' | 'BOUND_TRX' | 'UNBOUND';
 
-/** `esme` : client (application). `smsc` : serveur (centre de messages). */
+/** `esme`: client (application). `smsc`: server (message centre). */
 export type SessionRole = 'esme' | 'smsc';
 
 export type BindMode = 'transmitter' | 'receiver' | 'transceiver';
@@ -50,7 +50,7 @@ export function isBound(state: SessionState): boolean {
 const canTransmit = (s: SessionState) => s === 'BOUND_TX' || s === 'BOUND_TRX';
 const canReceiveMessages = (s: SessionState) => s === 'BOUND_RX' || s === 'BOUND_TRX';
 
-/** Opérations de soumission : ESME → SMSC, session transmitter ou transceiver. */
+/** Submission operations: ESME → SMSC, transmitter or transceiver session. */
 const SUBMISSION = new Set<CommandName>([
   'submit_sm',
   'submit_multi',
@@ -62,12 +62,12 @@ const SUBMISSION = new Set<CommandName>([
   'cancel_broadcast_sm',
 ]);
 
-/** Opérations de remise : SMSC → ESME, session receiver ou transceiver. */
+/** Delivery operations: SMSC → ESME, receiver or transceiver session. */
 const DELIVERY = new Set<CommandName>(['deliver_sm', 'alert_notification']);
 
 /**
- * Vrai si `sender` peut émettre `command` dans l'état `state` (REL-01, SEC-06, SEC-07).
- * Sert aux deux sens : `canReceive(role) = canSend(rôle du pair)`.
+ * True when `sender` may send `command` in state `state` (REL-01, SEC-06, SEC-07).
+ * Works both ways: `canReceive(role) = canSend(peer role)`.
  */
 export function canSend(sender: SessionRole, state: SessionState, command: CommandName): boolean {
   if (state === 'CLOSED') return false;
@@ -86,13 +86,13 @@ export function peerRole(role: SessionRole): SessionRole {
   return role === 'esme' ? 'smsc' : 'esme';
 }
 
-/** Commandes autorisées pour un mode de bind (contrôle local avant envoi, SEC-07). */
+/** Commands allowed for a bind mode (local check before sending, SEC-07). */
 export function canSendInMode(sender: SessionRole, mode: BindMode, command: CommandName): boolean {
   if (bindModeOf(command) || command === 'outbind') return false;
   return canSend(sender, BOUND_STATE[mode], command);
 }
 
-/** Machine à états : chaque transition est validée et notifiée. */
+/** State machine: every transition is validated and notified. */
 export class StateMachine {
   private current: SessionState;
 

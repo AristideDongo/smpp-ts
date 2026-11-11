@@ -1,14 +1,14 @@
 import { SmppValidationError } from '../errors.js';
 
 /**
- * Alphabet GSM 03.38 / 3GPP TS 23.038.
- * Les septets sont manipulés « non compactés » (un septet par octet), forme habituelle en SMPP.
- * `packSeptets` / `unpackSeptets` permettent le compactage si le SMSC l'exige.
+ * GSM 03.38 / 3GPP TS 23.038 alphabet.
+ * Septets are handled unpacked (one septet per byte), the usual form in SMPP.
+ * `packSeptets` / `unpackSeptets` pack them when the SMSC requires it.
  */
 
 const ESC = 0x1b;
 
-// biome-ignore format: table alignée sur 16 colonnes
+// biome-ignore format: table aligned on 16 columns
 const BASIC_TABLE =
   '@£$¥èéùìòÇ\nØø\rÅå' +
   'Δ_ΦΓΛΩΠΨΣΘΞ\u001bÆæßÉ' +
@@ -19,7 +19,7 @@ const BASIC_TABLE =
   '¿abcdefghijklmno' +
   'pqrstuvwxyzäöñüà';
 
-/** Table d'extension par défaut (après ESC). */
+/** Default extension table (after ESC). */
 const DEFAULT_EXTENSION: Record<number, string> = {
   10: '\f',
   20: '^',
@@ -33,13 +33,13 @@ const DEFAULT_EXTENSION: Record<number, string> = {
   101: '€',
 };
 
-/** Langues disposant d'une table de « single shift » nationale. */
+/** Languages that have a national single shift table. */
 export type NationalLanguage = 'tr' | 'es' | 'pt';
 
-/** Identifiants de langue (3GPP TS 23.038 §6.2.1.2.4), valeur de l'IE UDH 0x24. */
+/** Language identifiers (3GPP TS 23.038 §6.2.1.2.4), value of UDH IE 0x24. */
 export const NATIONAL_LANGUAGE_ID: Record<NationalLanguage, number> = { tr: 0x01, es: 0x02, pt: 0x03 };
 
-/** Tables de single shift nationales (3GPP TS 23.038 annexe A.2). */
+/** National single shift tables (3GPP TS 23.038 annex A.2). */
 const SINGLE_SHIFT_TABLES: Record<NationalLanguage, Record<number, string>> = {
   tr: {
     ...DEFAULT_EXTENSION,
@@ -116,20 +116,20 @@ const EXT_DECODE = {
   ...SINGLE_SHIFT_TABLES,
 };
 
-/** Nombre de septets d'un caractère (1 ou 2), ou `undefined` s'il n'est pas représentable. */
+/** Septets used by a character (1 or 2), or `undefined` if it cannot be represented. */
 export function gsm7CharCost(ch: string, shift?: NationalLanguage): 1 | 2 | undefined {
   if (BASIC_ENCODE.has(ch)) return 1;
   if (EXT_ENCODE[shift ?? 'default'].has(ch)) return 2;
   return undefined;
 }
 
-/** Vrai si tout le texte est représentable en GSM7 (avec la table de shift donnée). */
+/** True when the whole text can be represented in GSM7 (with the given shift table). */
 export function canEncodeGsm7(text: string, shift?: NationalLanguage): boolean {
   for (const ch of text) if (gsm7CharCost(ch, shift) === undefined) return false;
   return true;
 }
 
-/** Longueur en septets (les caractères d'extension comptent pour 2). */
+/** Length in septets (extension characters count as 2). */
 export function gsm7Length(text: string, shift?: NationalLanguage): number {
   let n = 0;
   for (const ch of text) {
@@ -149,7 +149,7 @@ function unrepresentable(ch: string): SmppValidationError {
   );
 }
 
-/** Encode en septets non compactés. Lève une erreur si un caractère n'est pas représentable (pas de `?`). */
+/** Encodes into unpacked septets. Throws if a character cannot be represented (no `?`). */
 export function encodeGsm7(text: string, shift?: NationalLanguage): Buffer {
   const out: number[] = [];
   const ext = EXT_ENCODE[shift ?? 'default'];
@@ -166,7 +166,7 @@ export function encodeGsm7(text: string, shift?: NationalLanguage): Buffer {
   return Buffer.from(out);
 }
 
-/** Décode des septets non compactés. Tolérant : un septet invalide devient U+FFFD. */
+/** Decodes unpacked septets. Lenient: an invalid septet becomes U+FFFD. */
 export function decodeGsm7(buf: Uint8Array, shift?: NationalLanguage): string {
   const ext = EXT_DECODE[shift ?? 'default'];
   let out = '';
@@ -176,7 +176,7 @@ export function decodeGsm7(buf: Uint8Array, shift?: NationalLanguage): string {
       const next = buf[i + 1];
       if (next === undefined) break;
       i++;
-      // Code d'extension inconnu : on affiche le caractère de la table de base (23.038 §6.2.1.1).
+      // Unknown extension code: show the base table character (23.038 §6.2.1.1).
       out += ext[next] ?? (next < 0x80 && next !== ESC ? BASIC_TABLE[next] : '�');
       continue;
     }
@@ -186,8 +186,8 @@ export function decodeGsm7(buf: Uint8Array, shift?: NationalLanguage): string {
 }
 
 /**
- * Compacte des septets en octets (7 bits par caractère).
- * `fillBits` : bits de bourrage en tête, pour aligner après un UDH.
+ * Packs septets into octets (7 bits per character).
+ * `fillBits`: leading padding bits, to align after a UDH.
  */
 export function packSeptets(septets: Uint8Array, fillBits = 0): Buffer {
   const totalBits = fillBits + septets.length * 7;
@@ -204,7 +204,7 @@ export function packSeptets(septets: Uint8Array, fillBits = 0): Buffer {
   return out;
 }
 
-/** Décompacte `count` septets (si omis : autant que possible). */
+/** Unpacks `count` septets (as many as possible when omitted). */
 export function unpackSeptets(packed: Uint8Array, count?: number, fillBits = 0): Buffer {
   const max = Math.max(0, Math.floor((packed.length * 8 - fillBits) / 7));
   const n = Math.max(0, Math.min(count ?? max, max));

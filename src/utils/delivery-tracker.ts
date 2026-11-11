@@ -1,42 +1,42 @@
 import type { DeliveryReport, DlrStatus } from './dlr.js';
 
 /**
- * Issue agrégée d'un message (éventuellement multi-segments) :
- * - `DELIVERED` : tous les segments ont été remis ;
- * - `FAILED` : aucun segment n'a été remis ;
- * - `PARTIALLY_DELIVERED` : certains segments seulement ;
- * - `TIMEOUT` : tous les accusés finaux ne sont pas arrivés dans le délai (`ttl`) ou le suivi a été évincé.
+ * Aggregated outcome of a (possibly multi-segment) message:
+ * - `DELIVERED`: every segment was delivered;
+ * - `FAILED`: no segment was delivered;
+ * - `PARTIALLY_DELIVERED`: only some segments were;
+ * - `TIMEOUT`: not every final receipt arrived within `ttl`, or tracking was evicted.
  */
 export type MessageOutcome = 'DELIVERED' | 'FAILED' | 'PARTIALLY_DELIVERED' | 'TIMEOUT';
 
 export interface MessageStatus {
   outcome: MessageOutcome;
-  /** `message_id` de chaque segment, dans l'ordre d'envoi. */
+  /** `message_id` of each segment, in sending order. */
   messageIds: string[];
   parts: number;
-  /** Accusé final de chaque segment (même index que `messageIds`), `undefined` s'il n'est pas arrivé. */
+  /** Final receipt of each segment (same index as `messageIds`), `undefined` if it never arrived. */
   reports: Array<DeliveryReport | undefined>;
-  /** Référence applicative passée à `track()` / `sendText({ reference })`. */
+  /** Application reference passed to `track()` / `sendText({ reference })`. */
   reference?: string;
-  /** Date du premier `track()`. */
+  /** Time of the first `track()`. */
   submittedAt: Date;
 }
 
 export interface DeliveryTrackerOptions {
-  /** Durée maximale d'attente des accusés finaux. Défaut : 24 h. */
+  /** Maximum wait for the final receipts. Default: 24 h. */
   ttl?: number;
-  /** Nombre maximal de messages suivis ; au-delà, le plus ancien est clos en `TIMEOUT`. Défaut : 100 000. */
+  /** Maximum tracked messages; beyond that, the oldest is closed as `TIMEOUT`. Default: 100 000. */
   maxTracked?: number;
   /**
-   * Durée de conservation d'un accusé arrivé avant son `submit_sm_resp`
-   * (possible pour les segments d'un message long). Défaut : 60 s.
+   * How long a receipt that arrives before its `submit_sm_resp` is kept
+   * (possible for the segments of a long message). Default: 60 s.
    */
   orphanTtl?: number;
-  /** Nombre maximal d'accusés orphelins conservés. Défaut : 10 000. */
+  /** Maximum number of orphan receipts kept. Default: 10 000. */
   maxOrphans?: number;
 }
 
-/** Statuts qui ne changeront plus : l'accusé est final. */
+/** Statuses that will not change any more: the receipt is final. */
 const FINAL_STATUSES = new Set<DlrStatus>([
   'DELIVERED',
   'EXPIRED',
@@ -66,11 +66,11 @@ interface Orphan {
 }
 
 /**
- * Regroupe les accusés de réception des segments d'un même message et signale
- * son issue une fois tous les accusés finaux reçus (ou à expiration du `ttl`).
+ * Groups the delivery receipts of the segments of one message and reports
+ * its outcome once every final receipt has arrived (or when `ttl` expires).
  *
- * Mémoire bornée (`maxTracked`, `maxOrphans`) ; aucune persistance : après un redémarrage,
- * c'est à l'application de rapprocher les accusés de ses propres enregistrements.
+ * Bounded memory (`maxTracked`, `maxOrphans`); no persistence: after a restart,
+ * the application matches receipts against its own records.
  */
 export class DeliveryTracker {
   private readonly entries = new Map<Entry, true>();
@@ -91,12 +91,12 @@ export class DeliveryTracker {
     this.maxOrphans = options.maxOrphans ?? 10_000;
   }
 
-  /** Messages en attente d'accusés. */
+  /** Messages awaiting receipts. */
   get size(): number {
     return this.entries.size;
   }
 
-  /** Commence le suivi d'un message à partir des `message_id` de ses segments. */
+  /** Starts tracking a message from the `message_id` of its segments. */
   track(messageIds: readonly string[], reference?: string): void {
     if (messageIds.length === 0) return;
     while (this.entries.size >= this.maxTracked) {
@@ -122,14 +122,14 @@ export class DeliveryTracker {
       if (!orphan) continue;
       clearTimeout(orphan.timer);
       this.orphans.delete(id);
-      if (!this.entries.has(entry)) return; // déjà clos par un orphelin précédent
+      if (!this.entries.has(entry)) return; // already closed by an earlier orphan
       this.handle(orphan.dlr);
     }
   }
 
   /**
-   * Traite un accusé. Renvoie `true` s'il correspond à un message suivi.
-   * Un accusé final sans correspondance est conservé `orphanTtl` ms au cas où le `track()` arrive après.
+   * Handles a receipt. Returns `true` if it matches a tracked message.
+   * An unmatched final receipt is kept `orphanTtl` ms in case `track()` comes later.
    */
   handle(dlr: DeliveryReport): boolean {
     const match = this.byId.get(dlr.messageId) ?? this.byId.get(dlr.rawMessageId.trim());
@@ -151,7 +151,7 @@ export class DeliveryTracker {
     return true;
   }
 
-  /** Abandonne tout suivi en cours, sans émettre de statut. */
+  /** Drops all tracking in progress, without emitting any status. */
   clear(): void {
     for (const entry of this.entries.keys()) clearTimeout(entry.timer);
     for (const orphan of this.orphans.values()) clearTimeout(orphan.timer);

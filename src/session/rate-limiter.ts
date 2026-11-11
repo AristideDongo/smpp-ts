@@ -1,17 +1,17 @@
 export interface RateLimitOptions {
-  /** Débit soutenu, en PDU par seconde. */
+  /** Sustained rate, in PDUs per second. */
   perSecond: number;
-  /** Rafale maximale. Défaut : `perSecond`. */
+  /** Maximum burst. Default: `perSecond`. */
   burst?: number;
-  /** Facteur de réduction appliqué sur ESME_RTHROTTLED / ESME_RMSGQFUL. Défaut : 0.5. */
+  /** Reduction factor applied on ESME_RTHROTTLED / ESME_RMSGQFUL. Default: 0.5. */
   backoffFactor?: number;
-  /** Débit minimal après réductions successives, en fraction du débit nominal. Défaut : 0.1. */
+  /** Minimum rate after successive reductions, as a fraction of the nominal rate. Default: 0.1. */
   minFactor?: number;
-  /** Durée de la réduction avant retour progressif au débit nominal. Défaut : 10 s. */
+  /** How long a reduction lasts before gradually returning to the nominal rate. Default: 10 s. */
   cooldownMs?: number;
 }
 
-/** Seau à jetons avec réduction adaptative du débit (REL-04). */
+/** Token bucket with adaptive rate reduction (REL-04). */
 export class TokenBucket {
   private tokens: number;
   private last: number;
@@ -38,7 +38,7 @@ export class TokenBucket {
     this.last = this.now();
   }
 
-  /** Débit courant (PDU/s). */
+  /** Current rate (PDUs/s). */
   get currentRate(): number {
     this.refill();
     return this.rate;
@@ -47,7 +47,7 @@ export class TokenBucket {
   private refill(): void {
     const t = this.now();
     if (this.penaltyUntil !== 0 && t >= this.penaltyUntil) {
-      // Retour progressif : on double le débit à chaque période sans nouvelle pénalité.
+      // Gradual recovery: double the rate for every period without a new penalty.
       this.rate = Math.min(this.baseRate, this.rate * 2);
       this.penaltyUntil = this.rate < this.baseRate ? t + this.cooldownMs : 0;
     }
@@ -58,7 +58,7 @@ export class TokenBucket {
     }
   }
 
-  /** Prend un jeton. Renvoie 0 si accordé, sinon le délai d'attente en ms. */
+  /** Takes a token. Returns 0 if granted, otherwise the wait in ms. */
   take(): number {
     this.refill();
     if (this.tokens >= 1) {
@@ -68,7 +68,7 @@ export class TokenBucket {
     return Math.max(1, Math.ceil(((1 - this.tokens) / this.rate) * 1000));
   }
 
-  /** Réduit temporairement le débit (SMSC saturé). */
+  /** Temporarily reduces the rate (SMSC overloaded). */
   penalize(): void {
     this.refill();
     this.rate = Math.max(this.minRate, this.rate * this.backoffFactor);

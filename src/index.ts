@@ -1,4 +1,4 @@
-// Client / serveur
+// Client / server
 export { SmppClient } from './client/client.js';
 export type {
   BindOptions,
@@ -65,7 +65,7 @@ export type {
 } from './codec/pdu.js';
 export { Framer } from './codec/framer.js';
 
-// Protocole
+// Protocol
 export {
   COMMANDS,
   commandNameById,
@@ -99,7 +99,7 @@ export type {
   UnknownTlv,
 } from './protocol/tlv.js';
 
-// Encodages
+// Encodings
 export {
   EncodingRegistry,
   asciiCodec,
@@ -123,7 +123,7 @@ export type { NationalLanguage } from './encoding/gsm7.js';
 export { detectEncoding } from './encoding/detect.js';
 export type { DetectOptions, DetectionResult, DetectedEncoding } from './encoding/detect.js';
 
-// Utilitaires
+// Utilities
 export { countSegments, splitText } from './utils/segments.js';
 export type { MultipartStrategy, SegmentInfo, SegmentOptions } from './utils/segments.js';
 export {
@@ -163,7 +163,7 @@ export type { Endpoint, TlsClientOptions } from './transport/connection.js';
 export { CidrList, parseProxyHeader } from './transport/proxy-protocol.js';
 export type { ProxyHeader, ProxyProtocolOptions } from './transport/proxy-protocol.js';
 
-// Erreurs, logs, métriques
+// Errors, logs, metrics
 export {
   SmppConnectionClosedError,
   SmppDecodeError,

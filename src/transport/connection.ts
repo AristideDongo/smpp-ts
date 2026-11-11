@@ -12,26 +12,26 @@ export interface Endpoint {
   tls: boolean;
 }
 
-/** Options TLS client. La vérification du certificat est activée par défaut (SEC-01). */
+/** TLS client options. Certificate verification is on by default (SEC-01). */
 export interface TlsClientOptions {
-  /** Autorité(s) de certification supplémentaire(s), pour un SMSC à certificat auto-signé. */
+  /** Extra certificate authorities, for an SMSC with a self-signed certificate. */
   ca?: string | Buffer | Array<string | Buffer>;
   cert?: string | Buffer;
   key?: string | Buffer;
   passphrase?: string;
   /**
-   * Vérification du certificat du serveur. Défaut : **true**.
-   * La désactiver expose les identifiants du bind à une attaque de l'homme du milieu.
+   * Server certificate verification. Default: **true**.
+   * Disabling it exposes the bind credentials to man-in-the-middle attacks.
    */
   rejectUnauthorized?: boolean;
   checkServerIdentity?: (hostname: string, cert: tls.PeerCertificate) => Error | undefined;
-  /** Version TLS minimale. Défaut : TLSv1.2. */
+  /** Minimum TLS version. Default: TLSv1.2. */
   minVersion?: tls.SecureVersion;
-  /** Nom SNI. Défaut : l'hôte. */
+  /** SNI name. Default: the host. */
   servername?: string;
 }
 
-/** Analyse une URL `smpp://hôte:port` ou `ssmpp://hôte:port` (API WHATWG URL). */
+/** Parses a `smpp://host:port` or `ssmpp://host:port` URL (WHATWG URL API). */
 export function parseSmppUrl(url: string): Endpoint {
   let u: URL;
   try {
@@ -52,7 +52,7 @@ export function parseSmppUrl(url: string): Endpoint {
   return { host, port: u.port ? Number(u.port) : isTls ? DEFAULT_TLS_PORT : DEFAULT_PORT, tls: isTls };
 }
 
-/** Construit les options TLS avec les valeurs sûres par défaut (SEC-01). */
+/** Builds TLS options with safe defaults (SEC-01). */
 export function buildTlsOptions(
   endpoint: Endpoint,
   options: TlsClientOptions = {},
@@ -81,13 +81,13 @@ export function buildTlsOptions(
 }
 
 export interface ConnectOptions {
-  /** Défaut : 10 s. */
+  /** Default: 10 s. */
   connectTimeout?: number;
   tls?: TlsClientOptions;
   logger?: Logger;
 }
 
-/** Ouvre une connexion TCP ou TLS avec timeout. */
+/** Opens a TCP or TLS connection with a timeout. */
 export function connectSocket(endpoint: Endpoint, options: ConnectOptions = {}): Promise<net.Socket> {
   const timeoutMs = options.connectTimeout ?? 10_000;
   return new Promise((resolve, reject) => {

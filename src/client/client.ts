@@ -60,7 +60,7 @@ export interface BindOptions {
   system_id: string;
   password: string;
   system_type?: string;
-  /** Défaut : 0x34 (SMPP v3.4, le plus largement accepté). 0x50 pour v5.0. */
+  /** Default: 0x34 (SMPP v3.4, the most widely accepted). 0x50 for v5.0. */
   interface_version?: number;
   addr_ton?: number;
   addr_npi?: number;
@@ -68,24 +68,24 @@ export interface BindOptions {
 }
 
 export interface SmppClientOptions {
-  /** `smpp://hôte:port` ou `ssmpp://hôte:port` (TLS). */
+  /** `smpp://host:port` or `ssmpp://host:port` (TLS). */
   url?: string;
   host?: string;
   port?: number;
-  /** Active TLS (et/ou fournit ses options). Vérification du certificat activée par défaut. */
+  /** Enables TLS (and/or sets its options). Certificate verification is on by default. */
   tls?: boolean | TlsClientOptions;
   bind: BindOptions;
 
-  /** Requêtes en vol simultanées. Défaut : 10. */
+  /** Concurrent in-flight requests. Default: 10. */
   window?: number;
-  /** Taille de la file d'envoi. Défaut : 10 000. */
+  /** Send queue size. Default: 10 000. */
   maxQueueSize?: number;
   rateLimit?: RateLimitOptions;
-  /** Reconnexion automatique. Défaut : activée, tentatives illimitées. */
+  /** Automatic reconnection. Default: enabled, unlimited attempts. */
   reconnect?: boolean | ReconnectOptions;
-  /** Nouvelles tentatives sur statut temporaire. `false` pour désactiver. */
+  /** Retries on temporary statuses. `false` to disable. */
   retry?: false | RetryOptions;
-  /** Classification des command_status (REL-06). */
+  /** command_status classification (REL-06). */
   classifyStatus?: (status: number, defaultCategory: StatusCategory) => StatusCategory;
 
   connectTimeout?: number;
@@ -96,31 +96,31 @@ export interface SmppClientOptions {
   unbindTimeout?: number;
 
   logger?: Logger;
-  /** Masque le contenu des SMS dans les logs. */
+  /** Masks SMS content in logs. */
   redactContent?: boolean;
-  /** Masque partiellement les numéros dans les logs. */
+  /** Partially masks phone numbers in logs. */
   redactNumbers?: boolean;
 
-  /** Répond automatiquement deliver_sm_resp / data_sm_resp (statut 0). Défaut : true. */
+  /** Automatically answers deliver_sm_resp / data_sm_resp (status 0). Default: true. */
   autoAck?: boolean;
-  /** Normalisation des message_id des accusés. Défaut : `as-is`. */
+  /** message_id normalization for delivery receipts. Default: `as-is`. */
   messageIdFormat?: MessageIdFormat;
-  /** Normalisation et validation des adresses de `sendText` (numéros, expéditeur alphanumérique). */
+  /** Normalization and validation of `sendText` addresses (numbers, alphanumeric sender). */
   address?: AddressOptions;
   /**
-   * Regroupe les accusés des segments d'un message envoyé par `sendText` (avec `registeredDelivery`)
-   * et émet `messageStatus` avec l'issue globale. Désactivé par défaut.
+   * Groups the receipts of every segment of a message sent with `sendText` (with `registeredDelivery`)
+   * and emits `messageStatus` with the overall outcome. Disabled by default.
    */
   trackDeliveries?: boolean | DeliveryTrackerOptions;
   multipart?: {
     strategy?: MultipartStrategy;
-    /** Tables de shift nationales autorisées pour la détection automatique. */
+    /** National shift tables allowed during automatic detection. */
     shiftTables?: NationalLanguage[];
     allowLatin1?: boolean;
     packGsm7?: boolean;
   };
   reassembly?: { ttl?: number; maxBuffers?: number };
-  /** Septets GSM7 entrants compactés. Défaut : false. */
+  /** Incoming GSM7 septets are packed. Default: false. */
   packedGsm7?: boolean;
   encodings?: EncodingRegistry;
   codec?: CodecOptions;
@@ -130,13 +130,13 @@ export interface SendTextOptions {
   to: string;
   from: string;
   text: string;
-  /** Encodage forcé (`gsm7`, `latin1`, `ucs2`, `ascii` ou encodage enregistré). */
+  /** Forced encoding (`gsm7`, `latin1`, `ucs2`, `ascii` or a registered encoding). */
   encoding?: string;
   shift?: NationalLanguage;
   strategy?: MultipartStrategy;
-  /** `true` = accusé sur l'issue finale ; ou une valeur registered_delivery. */
+  /** `true` = receipt for the final outcome; or a registered_delivery value. */
   registeredDelivery?: boolean | number;
-  /** Date d'expiration absolue, durée en ms, ou chaîne SMPP. */
+  /** Absolute expiry date, duration in ms, or SMPP time string. */
   validityPeriod?: Date | number | string;
   scheduleDeliveryTime?: Date | number | string;
   serviceType?: string;
@@ -145,10 +145,10 @@ export interface SendTextOptions {
   destTon?: number;
   destNpi?: number;
   priority?: number;
-  /** Paramètres submit_sm supplémentaires (TLV…). */
+  /** Extra submit_sm parameters (TLVs…). */
   params?: PduParams<'submit_sm'>;
   timeout?: number;
-  /** Référence applicative renvoyée dans l'événement `messageStatus` (avec `trackDeliveries`). */
+  /** Application reference echoed in the `messageStatus` event (with `trackDeliveries`). */
   reference?: string;
 }
 
@@ -161,12 +161,12 @@ export interface SendTextResult {
 export interface InboundMessage {
   from: string;
   to: string;
-  /** Texte, ou `undefined` pour un contenu binaire. */
+  /** Text, or `undefined` for binary content. */
   text?: string;
   body: Buffer;
   dataCoding: number;
   parts: number;
-  /** Segments manquants (partialMessage uniquement). */
+  /** Missing segments (partialMessage only). */
   missing: number[];
   pdus: Array<DeliverSm | DataSm>;
 }
@@ -178,7 +178,7 @@ export interface ClientEvents {
   dataSm: [pdu: DataSm];
   alert: [pdu: PduOf<'alert_notification'>];
   deliveryReport: [dlr: DeliveryReport, pdu: DeliverSm | DataSm];
-  /** Issue globale d'un message suivi (option `trackDeliveries`). */
+  /** Overall outcome of a tracked message (`trackDeliveries` option). */
   messageStatus: [status: MessageStatus];
   message: [message: InboundMessage];
   partialMessage: [message: InboundMessage];
@@ -201,12 +201,12 @@ type RawCommand = Exclude<
   | 'deliver_sm'
 >;
 
-/** Raccourcis bas niveau : `client.raw.submit_sm({...})`. */
+/** Low-level shortcuts: `client.raw.submit_sm({...})`. */
 export type RawApi = {
   [C in RawCommand]: (params?: PduParams<C>, options?: RequestOptions) => Promise<ResponseOf<C>>;
 };
 
-/** Client SMPP (ESME). */
+/** SMPP client (ESME). */
 export class SmppClient extends EventEmitter<ClientEvents> {
   readonly raw: RawApi;
   private readonly options: SmppClientOptions;
@@ -265,12 +265,12 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     this.raw = this.buildRaw();
   }
 
-  /** Messages en attente d'accusés (option `trackDeliveries`). */
+  /** Messages awaiting receipts (`trackDeliveries` option). */
   get trackedMessages(): number {
     return this.tracker?.size ?? 0;
   }
 
-  // ---------------------------------------------------------------- état
+  // ---------------------------------------------------------------- state
 
   get state(): SessionState {
     return this.session?.state ?? 'CLOSED';
@@ -281,21 +281,21 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     return s === 'BOUND_TX' || s === 'BOUND_RX' || s === 'BOUND_TRX';
   }
 
-  /** Requêtes en file (pas encore écrites). */
+  /** Queued requests (not written yet). */
   get queueSize(): number {
     return this.queue.size;
   }
 
-  /** Requêtes en vol. */
+  /** In-flight requests. */
   get inflight(): number {
     return this.session?.inflightCount ?? 0;
   }
 
-  // ---------------------------------------------------------------- connexion
+  // ---------------------------------------------------------------- connection
 
   /**
-   * Se connecte et se binde. Rejette si la première tentative échoue ;
-   * la reconnexion automatique prend ensuite le relais en cas de coupure.
+   * Connects and binds. Rejects if the first attempt fails;
+   * automatic reconnection takes over after that if the connection drops.
    */
   async connect(): Promise<void> {
     if (this.isBound) return;
@@ -334,7 +334,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     });
     this.session = session;
     session.on('stateChange', (from, to) => this.emitSafe('stateChange', from, to));
-    // La transition CLOSED → OPEN a lieu dans le constructeur de la session : on la relaie ici.
+    // The CLOSED → OPEN transition happens in the session constructor: relay it here.
     this.emitSafe('stateChange', 'CLOSED', 'OPEN');
     session.on('metric', (m) => this.emit('metric', m));
     session.on('error', (err) => this.emitError(err));
@@ -400,7 +400,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
   }
 
   private finalClose(cause: Error | undefined): void {
-    // Les messages jamais écrits peuvent être renvoyés sans risque de doublon.
+    // Messages never written can be resent without any risk of duplicates.
     this.queue.rejectAll(
       () => new SmppConnectionClosedError(false, 'Client closed before sending', { cause }),
     );
@@ -410,9 +410,9 @@ export class SmppClient extends EventEmitter<ClientEvents> {
   }
 
   /**
-   * Arrêt gracieux (REL-07).
-   * `drain: true` : refuse les nouveaux envois, attend la fin des requêtes en file et en vol
-   * (au plus `timeout`, défaut `requestTimeout`), puis unbind et fermeture.
+   * Graceful shutdown (REL-07).
+   * `drain: true` refuses new sends, waits for queued and in-flight requests
+   * (at most `timeout`, default `requestTimeout`), then unbinds and closes.
    */
   async close(options: { drain?: boolean; timeout?: number } = {}): Promise<void> {
     this.closing = true;
@@ -436,11 +436,11 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     }
   }
 
-  // ---------------------------------------------------------------- envoi
+  // ---------------------------------------------------------------- sending
 
   /**
-   * Envoie n'importe quelle requête SMPP et attend sa réponse.
-   * Les statuts temporaires sont retentés avec backoff (cf. `retry`).
+   * Sends any SMPP request and waits for its response.
+   * Temporary statuses are retried with backoff (see `retry`).
    */
   async request<C extends RequestCommandName>(
     command: C,
@@ -486,7 +486,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
         new SmppStateError(`send ${command}`, 'CLOSING', COMMAND_STATUS.ESME_RINVBNDSTS, 'Client is closing'),
       );
     }
-    // SEC-07 : refus local d'une commande interdite par le mode de bind.
+    // SEC-07: refuse locally a command the bind mode does not allow.
     if (command !== 'enquire_link' && !canSendInMode('esme', this.options.bind.mode, command)) {
       return Promise.reject(
         new SmppStateError(
@@ -509,7 +509,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
         ),
       );
     }
-    // Reconnexion en cours : la requête attend en file et partira après le re-bind (REL-05).
+    // Reconnecting: the request waits in the queue and goes out after the re-bind (REL-05).
     try {
       const encoded = this.codec.encode({ ...params, command, sequence_number: 0 } as never);
       const timeoutMs = options.timeout ?? this.options.requestTimeout ?? 10_000;
@@ -521,17 +521,17 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     }
   }
 
-  /** Envoi bas niveau d'un submit_sm. */
+  /** Low-level submit_sm. */
   submit(params: PduParams<'submit_sm'>, options?: RequestOptions): Promise<ResponseOf<'submit_sm'>> {
     return this.request('submit_sm', params, options);
   }
 
   /**
-   * Envoie un texte : choix automatique de l'encodage, découpage en segments,
-   * renvoie tous les message_id.
+   * Sends a text: picks the encoding, splits it into segments,
+   * returns every message_id.
    */
   async sendText(opts: SendTextOptions): Promise<SendTextResult> {
-    // Adresses validées avant tout calcul : aucune requête n'est émise pour un message invalide.
+    // Addresses are validated first: no request goes out for an invalid message.
     const addressing = this.options.address ?? {};
     const source = resolveAddress(opts.from, 'source', {
       ...addressing,
@@ -600,8 +600,8 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     const messageIds = results.map(
       (r) => (r as PromiseFulfilledResult<ResponseOf<'submit_sm'>>).value.message_id,
     );
-    // Suivi uniquement si un accusé final est demandé quel que soit le résultat (bits 0-1 = 01) :
-    // avec « échec seulement » ou « succès seulement », l'absence d'accusé ne permet pas de conclure.
+    // Track only when a final receipt is requested whatever the outcome (bits 0-1 = 01):
+    // with "failure only" or "success only", a missing receipt proves nothing.
     const wantsReceipt = ((base.registered_delivery ?? 0) & 0x03) === REGISTERED_DELIVERY.FINAL;
     if (this.tracker && wantsReceipt) this.tracker.track(messageIds, opts.reference);
     return {
@@ -611,12 +611,10 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     };
   }
 
-  /** query_sm. */
   query(messageId: string, params: Omit<PduParams<'query_sm'>, 'message_id'> = {}, options?: RequestOptions) {
     return this.request('query_sm', { ...params, message_id: messageId }, options);
   }
 
-  /** cancel_sm. */
   cancel(
     messageId: string,
     params: Omit<PduParams<'cancel_sm'>, 'message_id'> = {},
@@ -625,19 +623,18 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     return this.request('cancel_sm', { ...params, message_id: messageId }, options);
   }
 
-  /** replace_sm. */
   replace(messageId: string, params: Omit<PduParams<'replace_sm'>, 'message_id'>, options?: RequestOptions) {
     return this.request('replace_sm', { ...params, message_id: messageId }, options);
   }
 
-  /** Répond manuellement à un deliver_sm / data_sm (avec `autoAck: false`). */
+  /** Answers a deliver_sm / data_sm manually (with `autoAck: false`). */
   respond(pdu: DeliverSm | DataSm, params: { command_status?: number; message_id?: string } = {}): void {
     const session = this.session;
     if (!session) throw new SmppStateError('respond', 'CLOSED');
     session.respond(pdu, params);
   }
 
-  // ---------------------------------------------------------------- réception
+  // ---------------------------------------------------------------- receiving
 
   private onPdu(session: Session, pdu: Pdu): void {
     switch (pdu.command) {
@@ -708,7 +705,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     }
   }
 
-  // ---------------------------------------------------------------- utilitaires
+  // ---------------------------------------------------------------- helpers
 
   private nextConcatRef(): number {
     this.concatRef = (this.concatRef + 1) & 0xffff;
@@ -734,7 +731,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     return raw as RawApi;
   }
 
-  /** Les exceptions des listeners utilisateur ne doivent pas casser la session. */
+  /** Exceptions thrown by user listeners must not break the session. */
   private emitSafe<K extends keyof ClientEvents>(event: K, ...args: ClientEvents[K]): void {
     try {
       (this.emit as (e: K, ...a: ClientEvents[K]) => boolean)(event, ...args);
@@ -744,13 +741,11 @@ export class SmppClient extends EventEmitter<ClientEvents> {
   }
 
   private emitError(err: SmppError): void {
-    // Un `error` non écouté ne termine pas le processus : il part au logger (§8.3).
+    // An unhandled `error` does not end the process: it goes to the logger.
     if (this.listenerCount('error') > 0) this.emitSafe('error', err);
     else this.logger.error(err.message, { code: err.code });
   }
 }
-
-// ---------------------------------------------------------------- helpers
 
 function resolveEndpoint(o: SmppClientOptions): Endpoint {
   if (o.url) {

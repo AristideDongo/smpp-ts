@@ -23,7 +23,7 @@ import { Reader } from './reader.js';
 import { Writer } from './writer.js';
 
 // ---------------------------------------------------------------------------
-// Types publics
+// Public types
 // ---------------------------------------------------------------------------
 
 export interface PduHeader {
@@ -38,19 +38,19 @@ interface PduBase<C extends CommandName> {
   command_id: number;
   command_status: number;
   sequence_number: number;
-  /** TLV déclarés via `customTlvs`, indexés par nom. */
+  /** TLVs declared through `customTlvs`, indexed by name. */
   custom_tlvs?: Record<string, unknown>;
-  /** TLV inconnus, conservés tels quels. */
+  /** Unknown TLVs, kept as is. */
   unknown_tlvs?: UnknownTlv[];
 }
 
-/** PDU décodé d'une commande donnée. */
+/** Decoded PDU of a given command. */
 export type PduOf<C extends CommandName> = PduBase<C> & CommandParams<C> & TlvParams;
 
-/** Union discriminée de tous les PDU (discriminant : `command`). */
+/** Discriminated union of every PDU (discriminant: `command`). */
 export type Pdu = { [C in CommandName]: PduOf<C> }[CommandName];
 
-/** Paramètres d'entrée d'une commande : tous les champs sont optionnels (valeurs par défaut de la spec). */
+/** Input parameters of a command: every field is optional (spec defaults apply). */
 export type PduParams<C extends CommandName> = Partial<
   Omit<CommandParams<C>, 'short_message'> & {
     short_message: Uint8Array | string;
@@ -61,7 +61,7 @@ export type PduParams<C extends CommandName> = Partial<
     unknown_tlvs?: UnknownTlv[];
   };
 
-/** PDU à encoder. */
+/** PDU to encode. */
 export type PduInput<C extends CommandName = CommandName> = {
   [K in C]: { command: K; sequence_number?: number; command_status?: number } & PduParams<K>;
 }[C];
@@ -75,14 +75,14 @@ export interface CustomTlvDefinition extends TlvDefinition {
 }
 
 export interface CodecOptions {
-  /** TLV propres à un opérateur. */
+  /** Operator-specific TLVs. */
   customTlvs?: CustomTlvDefinition[];
   /**
-   * Validation stricte au décodage (longueurs max des chaînes et des TLV, exclusivité
-   * short_message / message_payload). Défaut : true.
+   * Strict validation when decoding (maximum string and TLV lengths, short_message /
+   * message_payload exclusivity). Default: true.
    */
   strict?: boolean;
-  /** Taille maximale d'un PDU (SEC-04). Défaut : 16 384 octets. */
+  /** Maximum PDU size (SEC-04). Default: 16 384 bytes. */
   maxPduLength?: number;
 }
 
@@ -98,7 +98,7 @@ const STANDARD_TLVS_BY_TAG = new Map<number, [string, TlvDefinition]>(
   (Object.entries(TLVS) as [string, TlvDefinition][]).map(([name, def]) => [def.tag, [name, def]]),
 );
 
-/** Codec PDU ⇄ octets. Pur : aucune I/O. */
+/** PDU ⇄ bytes codec. Pure: no I/O. */
 export class PduCodec {
   readonly strict: boolean;
   readonly maxPduLength: number;
@@ -172,7 +172,7 @@ export class PduCodec {
         w.cstring(field.name, value ?? '', field.max ?? 256);
         return;
       case 'sm_length':
-        return; // écrit avec short_message
+        return; // written together with short_message
       case 'short_message': {
         const bytes = toShortMessageBytes(value, params.data_coding);
         if (bytes.length > (field.max ?? 255)) {
@@ -245,7 +245,7 @@ export class PduCodec {
 
   // ------------------------------------------------------------------ decode
 
-  /** Lit l'en-tête (16 octets) sans valider le corps. */
+  /** Reads the header (16 bytes) without validating the body. */
   readHeader(buf: Buffer): PduHeader {
     if (buf.length < HEADER_LENGTH) {
       throw new SmppDecodeError(COMMAND_STATUS.ESME_RINVCMDLEN, 'PDU shorter than its header', {
@@ -261,8 +261,8 @@ export class PduCodec {
   }
 
   /**
-   * Décode un PDU complet (tel que livré par le `Framer`).
-   * Ne lève que des `SmppDecodeError`, jamais d'autre exception.
+   * Decodes a full PDU (as delivered by the `Framer`).
+   * Only throws `SmppDecodeError`, never any other exception.
    */
   decode(buf: Buffer): Pdu {
     const header = this.readHeader(buf);
@@ -295,7 +295,7 @@ export class PduCodec {
       if (err instanceof SmppDecodeError) {
         throw new SmppDecodeError(err.status, `${command}: ${err.message}`, { header: hdr, cause: err });
       }
-      // Filet de sécurité : le parseur ne doit jamais laisser échapper autre chose.
+      // Safety net: the parser must never let anything else escape.
       throw new SmppDecodeError(COMMAND_STATUS.ESME_RSYSERR, `${command}: unexpected decode failure`, {
         header: hdr,
         cause: err,
@@ -315,7 +315,7 @@ export class PduCodec {
 
     let smLength = 0;
     for (const field of def.params) {
-      // Réponses : certains SMSC omettent le corps (surtout en cas d'erreur). On complète avec les défauts.
+      // Responses: some SMSCs omit the body (especially on errors). Fill in the defaults.
       if (lenient && r.remaining === 0) {
         out[field.name] = defaultValue(field);
         continue;
@@ -608,22 +608,22 @@ function decodeTlvValue(name: string, def: TlvDefinition, raw: Buffer, strict: b
 }
 
 // ---------------------------------------------------------------------------
-// Instance par défaut
+// Default instance
 // ---------------------------------------------------------------------------
 
 export const defaultCodec = new PduCodec();
 
-/** Encode un PDU avec le codec par défaut. */
+/** Encodes a PDU with the default codec. */
 export function encodePdu(input: PduInput): Buffer {
   return defaultCodec.encode(input);
 }
 
-/** Décode un PDU complet avec le codec par défaut. */
+/** Decodes a full PDU with the default codec. */
 export function decodePdu(buf: Buffer): Pdu {
   return defaultCodec.decode(buf);
 }
 
-/** Restreint un PDU à une commande (garde de type). */
+/** Narrows a PDU to a command (type guard). */
 export function isCommand<C extends CommandName>(pdu: Pdu, command: C): pdu is Extract<Pdu, { command: C }> {
   return pdu.command === command;
 }

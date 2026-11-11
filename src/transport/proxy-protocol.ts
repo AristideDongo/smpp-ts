@@ -3,13 +3,13 @@ import type { Socket } from 'node:net';
 import { SmppError, SmppTimeoutError } from '../errors.js';
 
 /**
- * Proxy Protocol v1 (texte) et v2 (binaire), parseur interne sans dépendance (SEC-08).
- * Spécification : https://www.haproxy.org/download/2.9/doc/proxy-protocol.txt
+ * Proxy Protocol v1 (text) and v2 (binary), built-in parser with no dependency (SEC-08).
+ * Specification: https://www.haproxy.org/download/2.9/doc/proxy-protocol.txt
  */
 
 export interface ProxyHeader {
   version: 1 | 2;
-  /** `LOCAL` : connexion de santé du proxy, on garde l'adresse du socket. */
+  /** `LOCAL`: proxy health check connection, the socket address is kept. */
   command: 'PROXY' | 'LOCAL';
   family: 'TCP4' | 'TCP6' | 'UDP4' | 'UDP6' | 'UNIX' | 'UNKNOWN';
   sourceAddress?: string;
@@ -29,7 +29,7 @@ export const PROXY_V2_SIGNATURE = Buffer.from([
 const V1_PREFIX = Buffer.from('PROXY ', 'latin1');
 const V1_MAX_LENGTH = 107;
 
-/** Vrai si le buffer commence (ou pourrait commencer) par un en-tête Proxy Protocol. */
+/** True when the buffer starts (or could start) with a Proxy Protocol header. */
 export function looksLikeProxyHeader(buf: Buffer): boolean {
   const n = Math.min(buf.length, 6);
   if (n === 0) return false;
@@ -96,7 +96,7 @@ function parseV1(buf: Buffer): ProxyParseResult {
 function ipv6ToString(b: Buffer): string {
   const groups: string[] = [];
   for (let i = 0; i < 16; i += 2) groups.push(b.readUInt16BE(i).toString(16));
-  // Forme canonique via le parseur de Node (compression des zéros).
+  // Canonical form through Node's parser (zero compression).
   const raw = groups.join(':');
   const sl = new net.SocketAddress({ address: raw, family: 'ipv6' });
   return sl.address;
@@ -160,7 +160,7 @@ function parseV2(buf: Buffer): ProxyParseResult {
   };
 }
 
-/** Analyse un en-tête Proxy Protocol v1 ou v2 en tête de buffer. Ne lève jamais d'exception. */
+/** Parses a Proxy Protocol v1 or v2 header at the start of a buffer. Never throws. */
 export function parseProxyHeader(buf: Buffer): ProxyParseResult {
   try {
     if (buf.length === 0) return { status: 'incomplete' };
@@ -181,13 +181,13 @@ export function parseProxyHeader(buf: Buffer): ProxyParseResult {
   }
 }
 
-/** Normalise une adresse IPv4 mappée en IPv6 (`::ffff:1.2.3.4` → `1.2.3.4`). */
+/** Normalizes an IPv4-mapped IPv6 address (`::ffff:1.2.3.4` → `1.2.3.4`). */
 export function normalizeIp(address: string): string {
   const m = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address);
   return m ? m[1]! : address;
 }
 
-/** Liste de CIDR de confiance (IPv4 et IPv6), via `net.BlockList`. */
+/** List of trusted CIDRs (IPv4 and IPv6), backed by `net.BlockList`. */
 export class CidrList {
   private readonly list = new net.BlockList();
   readonly size: number;
@@ -218,15 +218,15 @@ export class CidrList {
 }
 
 export interface ProxyProtocolOptions {
-  /** CIDR des proxys de confiance (obligatoire). */
+  /** Trusted proxy CIDRs (required). */
   trustedProxies: readonly string[];
-  /** Délai de lecture de l'en-tête. Défaut : 5 s. */
+  /** Header read timeout. Default: 5 s. */
   headerTimeout?: number;
 }
 
 /**
- * Lit l'en-tête Proxy Protocol d'un socket provenant d'un proxy de confiance.
- * Les octets suivant l'en-tête sont remis dans le flux (`unshift`). Le socket est laissé en pause.
+ * Reads the Proxy Protocol header of a socket coming from a trusted proxy.
+ * Bytes after the header are pushed back into the stream (`unshift`). The socket is left paused.
  */
 export function readProxyHeader(socket: Socket, timeoutMs = 5_000): Promise<ProxyHeader> {
   return new Promise((resolve, reject) => {
@@ -258,8 +258,8 @@ export function readProxyHeader(socket: Socket, timeoutMs = 5_000): Promise<Prox
 }
 
 /**
- * Lit le premier fragment d'une connexion directe (non approuvée) pour refuser
- * tout en-tête Proxy Protocol usurpé. Les octets lus sont remis dans le flux.
+ * Reads the first chunk of a direct (untrusted) connection to reject any
+ * spoofed Proxy Protocol header. The bytes read are pushed back into the stream.
  */
 export function rejectSpoofedProxyHeader(socket: Socket, timeoutMs = 5_000): Promise<void> {
   return new Promise((resolve, reject) => {

@@ -1,15 +1,15 @@
 /**
- * Constantes du protocole SMPP v5.0 (rétrocompatible v3.4).
- * Les noms reprennent ceux de la spécification.
+ * SMPP v5.0 protocol constants (backward compatible with v3.4).
+ * Names follow the specification.
  */
 
-/** Taille de l'en-tête PDU : command_length, command_id, command_status, sequence_number. */
+/** PDU header size: command_length, command_id, command_status, sequence_number. */
 export const HEADER_LENGTH = 16;
 
-/** Valeur maximale d'un sequence_number (le bit de poids fort est réservé). */
+/** Maximum sequence_number (the most significant bit is reserved). */
 export const MAX_SEQUENCE_NUMBER = 0x7fffffff;
 
-/** Bit qui distingue une réponse d'une requête dans command_id. */
+/** command_id bit that tells a response from a request. */
 export const RESPONSE_BIT = 0x80000000;
 
 export const INTERFACE_VERSION = {
@@ -43,15 +43,15 @@ export const NPI = {
   WAP_CLIENT_ID: 0x12,
 } as const;
 
-/** esm_class : mode de messagerie (bits 1-0), type de message (bits 5-2), fonctionnalités GSM (bits 7-6). */
+/** esm_class: messaging mode (bits 1-0), message type (bits 5-2), GSM features (bits 7-6). */
 export const ESM_CLASS = {
-  // Mode de messagerie
+  // Messaging mode
   DEFAULT_MODE: 0x00,
   DATAGRAM: 0x01,
   FORWARD: 0x02,
   STORE_FORWARD: 0x03,
   MODE_MASK: 0x03,
-  // Type de message
+  // Message type
   DEFAULT_TYPE: 0x00,
   MC_DELIVERY_RECEIPT: 0x04,
   INTERMEDIATE_DELIVERY_NOTIFICATION: 0x20,
@@ -59,15 +59,14 @@ export const ESM_CLASS = {
   USER_ACKNOWLEDGEMENT: 0x10,
   CONVERSATION_ABORT: 0x18,
   TYPE_MASK: 0x3c,
-  // Fonctionnalités GSM
+  // GSM features
   UDH_INDICATOR: 0x40,
   REPLY_PATH: 0x80,
   UDHI_REPLY_PATH: 0xc0,
-  /** Variante utilisée par certaines passerelles (Kannel). */
+  /** Variant used by some gateways (Kannel). */
   KANNEL_UDH_INDICATOR: 0x43,
 } as const;
 
-/** registered_delivery. */
 export const REGISTERED_DELIVERY = {
   NONE: 0x00,
   FINAL: 0x01,
@@ -79,7 +78,7 @@ export const REGISTERED_DELIVERY = {
   INTERMEDIATE_NOTIFICATION: 0x10,
 } as const;
 
-/** data_coding (valeurs SMPP). */
+/** data_coding (SMPP values). */
 export const DATA_CODING = {
   SMSC_DEFAULT: 0x00,
   IA5: 0x01,
@@ -104,7 +103,7 @@ export const PRIORITY_FLAG = {
   LEVEL_4: 4,
 } as const;
 
-/** message_state (query_sm_resp, TLV message_state). */
+/** message_state (query_sm_resp, message_state TLV). */
 export const MESSAGE_STATE = {
   SCHEDULED: 0,
   ENROUTE: 1,
@@ -118,13 +117,13 @@ export const MESSAGE_STATE = {
   SKIPPED: 9,
 } as const;
 
-/** dest_flag de submit_multi. */
+/** submit_multi dest_flag. */
 export const DEST_FLAG = {
   SME_ADDRESS: 1,
   DISTRIBUTION_LIST: 2,
 } as const;
 
-/** IEI des en-têtes UDH utilisés par la lib. */
+/** UDH IEIs used by the library. */
 export const UDH_IEI = {
   CONCAT_8BIT: 0x00,
   CONCAT_16BIT: 0x08,

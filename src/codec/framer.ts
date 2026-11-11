@@ -4,15 +4,15 @@ import { COMMAND_STATUS } from '../protocol/status.js';
 import { DEFAULT_MAX_PDU_LENGTH } from './pdu.js';
 
 export interface FramerResult {
-  /** PDU complets extraits (chacun commence par son command_length). */
+  /** Complete PDUs extracted (each one starts with its command_length). */
   frames: Buffer[];
-  /** Erreur fatale : le flux est désynchronisé, la session doit être fermée. */
+  /** Fatal error: the stream is out of sync and the session must be closed. */
   error?: SmppDecodeError;
 }
 
 /**
- * Découpe un flux TCP en PDU, quelle que soit la fragmentation (REL-08).
- * Pur, sans I/O. Ne lève jamais d'exception : les erreurs sont renvoyées dans le résultat.
+ * Splits a TCP stream into PDUs, whatever the fragmentation (REL-08).
+ * Pure, no I/O. Never throws: errors are returned in the result.
  */
 export class Framer {
   private chunks: Buffer[] = [];
@@ -21,7 +21,7 @@ export class Framer {
 
   constructor(private readonly maxPduLength = DEFAULT_MAX_PDU_LENGTH) {}
 
-  /** Octets reçus mais pas encore assemblés en PDU. */
+  /** Bytes received but not yet assembled into a PDU. */
   get pendingBytes(): number {
     return this.buffered;
   }
@@ -73,7 +73,7 @@ export class Framer {
   private peekLength(): number {
     const first = this.chunks[0]!;
     if (first.length >= 4) return first.readUInt32BE(0);
-    // Longueur à cheval sur plusieurs fragments.
+    // Length split across several chunks.
     const head = Buffer.alloc(4);
     let copied = 0;
     for (const c of this.chunks) {
@@ -86,7 +86,7 @@ export class Framer {
   private take(n: number): Buffer {
     const first = this.chunks[0]!;
     if (first.length >= n) {
-      // Copie : le PDU ne retient pas tout le fragment réseau.
+      // Copy: the PDU does not retain the whole network chunk.
       const frame = Buffer.from(first.subarray(0, n));
       if (first.length === n) this.chunks.shift();
       else this.chunks[0] = first.subarray(n);

@@ -1,8 +1,8 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 
 /**
- * Compare deux chaînes en temps constant (indépendant du contenu ET de la longueur),
- * pour les implémentations simples du hook `authenticate` (SEC-06).
+ * Compares two strings in constant time (independent of content AND length),
+ * for simple `authenticate` hook implementations (SEC-06).
  */
 export function safeCompare(a: string, b: string): boolean {
   const ha = createHash('sha256').update(a, 'utf8').digest();
@@ -11,15 +11,15 @@ export function safeCompare(a: string, b: string): boolean {
 }
 
 export interface BindFailurePolicy {
-  /** Échecs tolérés dans la fenêtre avant bannissement. Défaut : 5. */
+  /** Failures tolerated within the window before a ban. Default: 5. */
   maxAttempts?: number;
-  /** Fenêtre de comptage. Défaut : 60 s. */
+  /** Counting window. Default: 60 s. */
   windowMs?: number;
-  /** Durée du bannissement. Défaut : 5 min. */
+  /** Ban duration. Default: 5 min. */
   banMs?: number;
 }
 
-/** Limitation des tentatives de bind échouées par IP (SEC-05). */
+/** Limits failed bind attempts per IP (SEC-05). */
 export class BindFailureTracker {
   private readonly entries = new Map<string, { failures: number[]; bannedUntil: number }>();
   private readonly maxAttempts: number;
@@ -43,7 +43,7 @@ export class BindFailureTracker {
     return false;
   }
 
-  /** Enregistre un échec ; renvoie `true` si l'IP vient d'être bannie. */
+  /** Records a failure; returns `true` if the IP has just been banned. */
   recordFailure(ip: string): boolean {
     const t = this.now();
     const e = this.entries.get(ip) ?? { failures: [], bannedUntil: 0 };

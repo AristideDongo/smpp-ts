@@ -1,9 +1,9 @@
 import { SmppValidationError } from '../errors.js';
 
 /**
- * Dates SMPP (§7.1.1 de la spec) au format `YYMMDDhhmmsstnnp` :
- * - absolue : `t` dixièmes de seconde, `nn` décalage en quarts d'heure, `p` = `+` ou `-` ;
- * - relative : `p` = `R`, les champs sont une durée (années, mois, jours, h, min, s).
+ * SMPP times (spec §7.1.1) in `YYMMDDhhmmsstnnp` format:
+ * - absolute: `t` tenths of a second, `nn` offset in quarter hours, `p` = `+` or `-`;
+ * - relative: `p` = `R`, the fields are a duration (years, months, days, h, min, s).
  */
 
 export type SmppTime =
@@ -16,13 +16,13 @@ export type SmppTime =
       hours: number;
       minutes: number;
       seconds: number;
-      /** Durée approximative (1 an = 365 j, 1 mois = 30 j). */
+      /** Approximate duration (1 year = 365 d, 1 month = 30 d). */
       durationMs: number;
     };
 
 const pad = (n: number, width = 2) => String(n).padStart(width, '0');
 
-/** Analyse une date SMPP. Renvoie `undefined` pour une chaîne vide (valeur « immédiate / défaut »). */
+/** Parses an SMPP time. Returns `undefined` for an empty string ("immediate / default" value). */
 export function parseSmppTime(value: string): SmppTime | undefined {
   if (value === '') return undefined;
   const m = /^(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d)(\d{2})([+\-R])$/.exec(value);
@@ -53,8 +53,8 @@ export function parseSmppTime(value: string): SmppTime | undefined {
 }
 
 /**
- * Formate une date absolue. `offsetQuarterHours` : décalage de l'heure locale exprimée
- * (0 = UTC, 4 = UTC+1…). Années 2000–2099 uniquement.
+ * Formats an absolute time. `offsetQuarterHours`: offset of the local time expressed
+ * (0 = UTC, 4 = UTC+1…). Years 2000–2099 only.
  */
 export function formatAbsoluteTime(date: Date, offsetQuarterHours = 0): string {
   if (!Number.isInteger(offsetQuarterHours) || Math.abs(offsetQuarterHours) > 48) {
@@ -76,7 +76,7 @@ export function formatAbsoluteTime(date: Date, offsetQuarterHours = 0): string {
   );
 }
 
-/** Formate une durée en date relative (`…000R`). Les secondes fractionnaires sont arrondies vers le bas. */
+/** Formats a duration as a relative time (`…000R`). Fractional seconds are rounded down. */
 export function formatRelativeTime(durationMs: number): string {
   if (!Number.isFinite(durationMs) || durationMs < 0) {
     throw new SmppValidationError('Duration must be a positive number', 'time');
@@ -100,7 +100,7 @@ export function formatRelativeTime(durationMs: number): string {
   return `${pad(years)}${pad(months)}${pad(days)}${pad(hours)}${pad(minutes)}${pad(seconds)}000R`;
 }
 
-/** Convertit une date SMPP (absolue ou relative) en `Date`, relativement à `now`. */
+/** Converts an SMPP time (absolute or relative) into a `Date`, relative to `now`. */
 export function smppTimeToDate(value: string, now: Date = new Date()): Date | undefined {
   const t = parseSmppTime(value);
   if (!t) return undefined;

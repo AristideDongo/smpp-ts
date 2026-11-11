@@ -2,8 +2,8 @@ import { SmppDecodeError } from '../errors.js';
 import { COMMAND_STATUS } from '../protocol/status.js';
 
 /**
- * Lecteur borné : aucune lecture ne dépasse `end`, aucune chaîne ne dépasse sa longueur max (BUG-06).
- * Toute violation lève une `SmppDecodeError` portant le code SMPP adéquat.
+ * Bounded reader: no read goes past `end`, no string exceeds its maximum length (BUG-06).
+ * Any violation throws a `SmppDecodeError` carrying the matching SMPP status.
  */
 export class Reader {
   private offset: number;
@@ -53,8 +53,8 @@ export class Reader {
   }
 
   /**
-   * Lit une C-Octet String. `max` inclut l'octet nul.
-   * La recherche du nul est limitée à min(fin du PDU, max) : jamais de lecture hors limites.
+   * Reads a C-Octet String. `max` includes the null byte.
+   * The search for the null is limited to min(end of PDU, max): never an out-of-bounds read.
    */
   cstring(field: string, max: number, strict = true): string {
     const limit = strict ? Math.min(this.end, this.offset + max) : this.end;
@@ -74,7 +74,7 @@ export class Reader {
     return value;
   }
 
-  /** Lit `n` octets (copie, pour ne pas retenir le buffer réseau). */
+  /** Reads `n` bytes (copied, so the network buffer is not retained). */
   octets(field: string, n: number, status: number = COMMAND_STATUS.ESME_RINVCMDLEN): Buffer {
     this.need(n, field, status);
     const out = Buffer.from(this.buf.subarray(this.offset, this.offset + n));

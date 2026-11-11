@@ -1,6 +1,6 @@
 import { SmppValidationError } from '../errors.js';
 
-/** Vrai si chaque caractère est dans ISO-8859-1. */
+/** True when every character is in ISO-8859-1. */
 export function canEncodeLatin1(text: string): boolean {
   for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) > 0xff) return false;
   return true;
@@ -17,7 +17,7 @@ export function decodeLatin1(buf: Uint8Array): string {
   return Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength).toString('latin1');
 }
 
-/** Vrai si chaque caractère est ASCII 7 bits (IA5). */
+/** True when every character is 7-bit ASCII (IA5). */
 export function canEncodeAscii(text: string): boolean {
   for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) > 0x7f) return false;
   return true;

@@ -1,28 +1,28 @@
 export interface BackoffOptions {
-  /** Premier délai. Défaut : 1 s. */
+  /** First delay. Default: 1 s. */
   initialDelay?: number;
-  /** Délai maximal. Défaut : 30 s. */
+  /** Maximum delay. Default: 30 s. */
   maxDelay?: number;
-  /** Multiplicateur entre deux tentatives. Défaut : 2. */
+  /** Multiplier between two attempts. Default: 2. */
   multiplier?: number;
-  /** Part aléatoire du délai (0 = aucune, 1 = totale). Défaut : 0.5. */
+  /** Random share of the delay (0 = none, 1 = all of it). Default: 0.5. */
   jitter?: number;
 }
 
 export interface ReconnectOptions extends BackoffOptions {
-  /** Nombre maximal de tentatives. Défaut : illimité. */
+  /** Maximum number of attempts. Default: unlimited. */
   maxAttempts?: number;
 }
 
 export interface RetryOptions extends BackoffOptions {
   /**
-   * Nombre de nouvelles tentatives sur statut temporaire (ESME_RTHROTTLED, ESME_RMSGQFUL, ESME_RSYSERR…).
-   * Défaut : 2. Chaque tentative a son propre `requestTimeout`.
+   * Number of retries on a temporary status (ESME_RTHROTTLED, ESME_RMSGQFUL, ESME_RSYSERR…).
+   * Default: 2. Each attempt gets its own `requestTimeout`.
    */
   maxRetries?: number;
 }
 
-/** Délai avant la tentative `attempt` (1 = première), backoff exponentiel avec gigue. */
+/** Delay before attempt `attempt` (1 = first): exponential backoff with jitter. */
 export function backoffDelay(
   attempt: number,
   options: BackoffOptions = {},
@@ -36,7 +36,7 @@ export function backoffDelay(
   return Math.round(base * (1 - jitter) + base * jitter * random());
 }
 
-/** `setTimeout` annulable. */
+/** Cancellable `setTimeout`. */
 export function cancellableSleep(ms: number): { promise: Promise<void>; cancel: () => void } {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let done!: () => void;

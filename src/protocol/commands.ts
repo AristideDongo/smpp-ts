@@ -1,8 +1,8 @@
 /**
- * Table déclarative des commandes SMPP v5.0 et de leurs paramètres obligatoires.
- * C'est la source de vérité dont dérivent le codec et les types TypeScript.
+ * Declarative table of SMPP v5.0 commands and their mandatory parameters.
+ * It is the source of truth the codec and the TypeScript types derive from.
  *
- * Les longueurs `max` des C-Octet Strings incluent l'octet nul terminal, comme dans la spec.
+ * `max` lengths of C-Octet Strings include the terminating null byte, as in the spec.
  */
 
 export type FieldType =
@@ -10,24 +10,24 @@ export type FieldType =
   | 'uint16'
   | 'uint32'
   | 'cstring'
-  /** Longueur de short_message (calculée automatiquement à l'encodage). */
+  /** short_message length (computed automatically when encoding). */
   | 'sm_length'
-  /** Octet String de longueur sm_length. */
+  /** Octet String of length sm_length. */
   | 'short_message'
-  /** number_of_dests + liste de dest_address (submit_multi). */
+  /** number_of_dests + list of dest_address (submit_multi). */
   | 'dest_address_list'
-  /** no_unsuccess + liste de unsuccess_sme (submit_multi_resp). */
+  /** no_unsuccess + list of unsuccess_sme (submit_multi_resp). */
   | 'unsuccess_sme_list';
 
 export interface FieldDefinition {
   readonly name: string;
   readonly type: FieldType;
   readonly max?: number;
-  /** Valeur secrète : jamais journalisée (SEC-02). */
+  /** Secret value: never logged (SEC-02). */
   readonly sensitive?: boolean;
-  /** Numéro de téléphone : masquable via `redactNumbers`. */
+  /** Phone number: maskable with `redactNumbers`. */
   readonly number?: boolean;
-  /** Contenu du message : masquable via `redactContent`. */
+  /** Message content: maskable with `redactContent`. */
   readonly content?: boolean;
 }
 
@@ -227,11 +227,11 @@ export const COMMANDS = {
 
 export type CommandName = keyof typeof COMMANDS;
 
-/** Commandes de requête (celles qui attendent une réponse, plus alert_notification/outbind). */
+/** Request commands (those expecting a response, plus alert_notification/outbind). */
 export type RequestCommandName = Exclude<CommandName, `${string}_resp` | 'generic_nack'>;
 export type ResponseCommandName = Extract<CommandName, `${string}_resp`>;
 
-/** Requêtes sans réponse définie dans la spec. */
+/** Requests the spec defines without a response. */
 export const NO_RESPONSE_COMMANDS: ReadonlySet<CommandName> = new Set<CommandName>([
   'alert_notification',
   'outbind',
@@ -249,14 +249,14 @@ export function isResponseCommand(name: CommandName): name is ResponseCommandNam
   return name === 'generic_nack' || name.endsWith('_resp');
 }
 
-/** Nom de la réponse attendue pour une requête, ou `undefined` si elle n'en a pas. */
+/** Name of the response expected for a request, or `undefined` if it has none. */
 export function responseNameOf(name: CommandName): ResponseCommandName | undefined {
   if (isResponseCommand(name) || NO_RESPONSE_COMMANDS.has(name)) return undefined;
   return `${name}_resp` as ResponseCommandName;
 }
 
 // ---------------------------------------------------------------------------
-// Types dérivés de la table
+// Types derived from the table
 // ---------------------------------------------------------------------------
 
 export interface DestAddressSme {
@@ -294,7 +294,7 @@ type FieldValue<F> = F extends { type: 'uint8' | 'uint16' | 'uint32' | 'sm_lengt
 
 type ParamsTuple<C extends CommandName> = (typeof COMMANDS)[C]['params'];
 
-/** Paramètres obligatoires (décodés) d'une commande. */
+/** Mandatory (decoded) parameters of a command. */
 export type CommandParams<C extends CommandName> = {
   -readonly [F in ParamsTuple<C>[number] as F['name']]: FieldValue<F>;
 };
