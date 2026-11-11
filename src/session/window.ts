@@ -124,13 +124,6 @@ export class RequestQueue {
     this.items.push(req);
   }
 
-  /** Remet une requête en tête de file (ex. débit limité). */
-  unshift(req: PendingRequest): void {
-    req.phase = 'queued';
-    req.release = () => this.remove(req);
-    this.items.unshift(req);
-  }
-
   peek(): PendingRequest | undefined {
     return this.items[0];
   }
