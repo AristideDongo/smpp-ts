@@ -188,6 +188,40 @@ Each segment is billed as one SMS. `multipart.maxSegments` (or `maxSegments` per
 
 `flash: true` sends a flash SMS (message class 0: shown at once, not stored by the handset). It works with GSM7, UCS2 and binary content; with Latin-1 or ASCII it is rejected before sending.
 
+### Several binds (`SmppPool`)
+
+Operators often cap the throughput of each bind (for example 50 msg/s) and allow several binds per account. `SmppPool` opens them all behind the same API as `SmppClient`:
+
+```ts
+import { SmppPool } from 'smpp-ts';
+
+const pool = new SmppPool({
+  url: 'ssmpp://smsc.example.com:3550',
+  bind: { mode: 'transceiver', system_id: 'xxx', password: 'yyy' },
+  size: 4,                       // 4 identical binds
+  rateLimit: { perSecond: 50 },  // per bind: 200 msg/s in total
+  trackDeliveries: true,
+});
+
+await pool.connect();            // resolves as soon as `minBound` binds are up (default 1)
+await pool.sendText({ to, from, text, registeredDelivery: true });
+pool.on('messageStatus', (s) => console.log(s.outcome));
+```
+
+| Option | Default | Effect |
+|---|---|---|
+| `size` | 2 | Number of identical binds |
+| `members` | none | One entry per bind, merged over the shared options: another host for failover, another `system_id`… (`bind` is merged field by field). Replaces `size` |
+| `strategy` | `least-busy` | `least-busy`: the bind with the fewest requests in flight or queued. `round-robin`: each bind in turn |
+| `minBound` | 1 | Binds that must be up for `connect()` to resolve |
+
+- Every other option (window, timeouts, `rateLimit`, `retry`…) applies to **each** bind.
+- When a bind goes down, sends go through the others while it reconnects. A bind that fails its first connection is retried in the background with the `reconnect` backoff. Events: `memberUp`, `memberDown`.
+- A send that was not written (bind closed, queue full) moves to another bind. A send that was written is never resent: same rule as `SmppClient` (`written`).
+- All the segments of a `sendText` go through the same bind, and concatenation references are shared by the pool: two binds never use the same reference at the same time.
+- Receipts and incoming messages are processed once for the whole pool. A receipt can arrive on another bind than its `submit_sm`, and the segments of a long incoming message can arrive on different binds: `messageStatus` and `message` still work.
+- `pool.members` gives access to each `SmppClient` (state, `raw` API).
+
 ## Server
 
 ```ts
