@@ -1,4 +1,10 @@
 import { SmppValidationError } from '../errors.js';
+import {
+  LOCKING_SHIFT,
+  NATIONAL_LANGUAGE_IDS,
+  type NationalLanguage,
+  SINGLE_SHIFT,
+} from './gsm7-national.js';
 
 /**
  * GSM 03.38 / 3GPP TS 23.038 alphabet.
@@ -20,7 +26,7 @@ const BASIC_TABLE =
   'pqrstuvwxyzäöñüà';
 
 /** Default extension table (after ESC). */
-const DEFAULT_EXTENSION: Record<number, string> = {
+const DEFAULT_EXTENSION: Readonly<Record<number, string>> = {
   10: '\f',
   20: '^',
   40: '{',
@@ -33,104 +39,99 @@ const DEFAULT_EXTENSION: Record<number, string> = {
   101: '€',
 };
 
-/** Languages that have a national single shift table. */
-export type NationalLanguage = 'tr' | 'es' | 'pt';
+export type { NationalLanguage };
 
-/** Language identifiers (3GPP TS 23.038 §6.2.1.2.4), value of UDH IE 0x24. */
-export const NATIONAL_LANGUAGE_ID: Record<NationalLanguage, number> = { tr: 0x01, es: 0x02, pt: 0x03 };
+/** Language identifiers (3GPP TS 23.038 §6.2.1.2.4), value of UDH IE 0x24 / 0x25. */
+export const NATIONAL_LANGUAGE_ID: Readonly<Record<NationalLanguage, number>> = NATIONAL_LANGUAGE_IDS;
 
-/** National single shift tables (3GPP TS 23.038 annex A.2). */
-const SINGLE_SHIFT_TABLES: Record<NationalLanguage, Record<number, string>> = {
-  tr: {
-    ...DEFAULT_EXTENSION,
-    71: 'Ğ',
-    73: 'İ',
-    83: 'Ş',
-    99: 'ç',
-    103: 'ğ',
-    105: 'ı',
-    115: 'ş',
-  },
-  es: {
-    ...DEFAULT_EXTENSION,
-    9: 'ç',
-    65: 'Á',
-    73: 'Í',
-    79: 'Ó',
-    85: 'Ú',
-    97: 'á',
-    105: 'í',
-    111: 'ó',
-    117: 'ú',
-  },
-  pt: {
-    ...DEFAULT_EXTENSION,
-    5: 'ê',
-    9: 'ç',
-    11: 'Ô',
-    12: 'ô',
-    14: 'Á',
-    15: 'á',
-    18: 'Φ',
-    19: 'Γ',
-    21: 'Ω',
-    22: 'Π',
-    23: 'Ψ',
-    24: 'Σ',
-    25: 'Θ',
-    31: 'Ê',
-    65: 'À',
-    73: 'Í',
-    79: 'Ó',
-    85: 'Ú',
-    91: 'Ã',
-    92: 'Õ',
-    97: 'Â',
-    105: 'í',
-    111: 'ó',
-    117: 'ú',
-    123: 'ã',
-    124: 'õ',
-    127: 'â',
-  },
-};
+/** Every national language with a single shift table (13, 3GPP TS 23.038 Release 9+). */
+export const NATIONAL_LANGUAGES: readonly NationalLanguage[] = Object.keys(
+  NATIONAL_LANGUAGE_IDS,
+) as NationalLanguage[];
 
-const BASIC_ENCODE = new Map<string, number>();
-for (let i = 0; i < BASIC_TABLE.length; i++) {
-  if (i !== ESC) BASIC_ENCODE.set(BASIC_TABLE[i]!, i);
+/**
+ * National tables used for a text:
+ * - `single`: single shift table (IE 0x24), replaces the extension table (characters after ESC, 2 septets);
+ * - `locking`: locking shift table (IE 0x25), replaces the default alphabet (1 septet).
+ * A plain language code means `{ single: code }`.
+ */
+export interface Gsm7Tables {
+  single?: NationalLanguage;
+  locking?: NationalLanguage;
 }
 
-function invert(table: Record<number, string>): Map<string, number> {
-  return new Map(Object.entries(table).map(([code, ch]) => [ch, Number(code)]));
+export type Gsm7Shift = NationalLanguage | Gsm7Tables;
+
+/** True when 23.038 defines a locking shift table for the language (all but Spanish). */
+export function hasLockingShift(language: NationalLanguage): boolean {
+  return LOCKING_SHIFT[language] !== undefined;
 }
 
-const EXT_ENCODE = {
-  default: invert(DEFAULT_EXTENSION),
-  tr: invert(SINGLE_SHIFT_TABLES.tr),
-  es: invert(SINGLE_SHIFT_TABLES.es),
-  pt: invert(SINGLE_SHIFT_TABLES.pt),
-};
+function tablesOf(shift: Gsm7Shift | undefined): Gsm7Tables {
+  return typeof shift === 'string' ? { single: shift } : (shift ?? {});
+}
 
-const EXT_DECODE = {
-  default: DEFAULT_EXTENSION,
-  ...SINGLE_SHIFT_TABLES,
-};
+interface Codec {
+  /** Septet → character (128 entries; undefined = not defined in the table). */
+  base: ReadonlyArray<string | undefined>;
+  ext: Readonly<Record<number, string>>;
+  baseEncode: ReadonlyMap<string, number>;
+  extEncode: ReadonlyMap<string, number>;
+}
+
+const BASIC_ARRAY: ReadonlyArray<string | undefined> = [...BASIC_TABLE];
+
+function encodeMap(entries: Iterable<[number, string | undefined]>): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const [code, ch] of entries) {
+    // First position wins (23.038 lists a few characters twice); ESC is never a character.
+    if (ch === undefined || code === ESC || map.has(ch)) continue;
+    map.set(ch, code);
+  }
+  return map;
+}
+
+const codecs = new Map<string, Codec>();
+
+function codecFor(shift: Gsm7Shift | undefined): Codec {
+  const { single, locking } = tablesOf(shift);
+  const key = `${locking ?? ''}/${single ?? ''}`;
+  let codec = codecs.get(key);
+  if (codec) return codec;
+  const lockingTable = locking ? LOCKING_SHIFT[locking] : undefined;
+  if (locking && !lockingTable) {
+    throw new SmppValidationError(`No locking shift table for language "${locking}"`, 'shift');
+  }
+  const base = lockingTable
+    ? Array.from({ length: 128 }, (_, i) => (i === ESC ? '\u001b' : lockingTable[i]))
+    : BASIC_ARRAY;
+  const ext = single ? SINGLE_SHIFT[single] : DEFAULT_EXTENSION;
+  codec = {
+    base,
+    ext,
+    baseEncode: encodeMap(base.map((ch, i) => [i, ch] as [number, string | undefined])),
+    extEncode: encodeMap(Object.entries(ext).map(([k, v]) => [Number(k), v] as [number, string])),
+  };
+  codecs.set(key, codec);
+  return codec;
+}
 
 /** Septets used by a character (1 or 2), or `undefined` if it cannot be represented. */
-export function gsm7CharCost(ch: string, shift?: NationalLanguage): 1 | 2 | undefined {
-  if (BASIC_ENCODE.has(ch)) return 1;
-  if (EXT_ENCODE[shift ?? 'default'].has(ch)) return 2;
+export function gsm7CharCost(ch: string, shift?: Gsm7Shift): 1 | 2 | undefined {
+  const codec = codecFor(shift);
+  if (codec.baseEncode.has(ch)) return 1;
+  if (codec.extEncode.has(ch)) return 2;
   return undefined;
 }
 
-/** True when the whole text can be represented in GSM7 (with the given shift table). */
-export function canEncodeGsm7(text: string, shift?: NationalLanguage): boolean {
+/** True when the whole text can be represented in GSM7 (with the given national tables). */
+export function canEncodeGsm7(text: string, shift?: Gsm7Shift): boolean {
   for (const ch of text) if (gsm7CharCost(ch, shift) === undefined) return false;
   return true;
 }
 
 /** Length in septets (extension characters count as 2). */
-export function gsm7Length(text: string, shift?: NationalLanguage): number {
+export function gsm7Length(text: string, shift?: Gsm7Shift): number {
   let n = 0;
   for (const ch of text) {
     const cost = gsm7CharCost(ch, shift);
@@ -150,25 +151,25 @@ function unrepresentable(ch: string): SmppValidationError {
 }
 
 /** Encodes into unpacked septets. Throws if a character cannot be represented (no `?`). */
-export function encodeGsm7(text: string, shift?: NationalLanguage): Buffer {
+export function encodeGsm7(text: string, shift?: Gsm7Shift): Buffer {
   const out: number[] = [];
-  const ext = EXT_ENCODE[shift ?? 'default'];
+  const { baseEncode, extEncode } = codecFor(shift);
   for (const ch of text) {
-    const basic = BASIC_ENCODE.get(ch);
+    const basic = baseEncode.get(ch);
     if (basic !== undefined) {
       out.push(basic);
       continue;
     }
-    const e = ext.get(ch);
+    const e = extEncode.get(ch);
     if (e === undefined) throw unrepresentable(ch);
     out.push(ESC, e);
   }
   return Buffer.from(out);
 }
 
-/** Decodes unpacked septets. Lenient: an invalid septet becomes U+FFFD. */
-export function decodeGsm7(buf: Uint8Array, shift?: NationalLanguage): string {
-  const ext = EXT_DECODE[shift ?? 'default'];
+/** Decodes unpacked septets. Lenient: an invalid or undefined septet becomes U+FFFD. */
+export function decodeGsm7(buf: Uint8Array, shift?: Gsm7Shift): string {
+  const { base, ext } = codecFor(shift);
   let out = '';
   for (let i = 0; i < buf.length; i++) {
     const b = buf[i]!;
@@ -177,10 +178,10 @@ export function decodeGsm7(buf: Uint8Array, shift?: NationalLanguage): string {
       if (next === undefined) break;
       i++;
       // Unknown extension code: show the base table character (23.038 §6.2.1.1).
-      out += ext[next] ?? (next < 0x80 && next !== ESC ? BASIC_TABLE[next] : '�');
+      out += ext[next] ?? (next < 0x80 && next !== ESC ? (base[next] ?? '�') : '�');
       continue;
     }
-    out += b < 0x80 ? BASIC_TABLE[b] : '�';
+    out += b < 0x80 ? (base[b] ?? '�') : '�';
   }
   return out;
 }

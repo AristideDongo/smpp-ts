@@ -1,8 +1,10 @@
 import {
+  type Gsm7Tables,
   NATIONAL_LANGUAGE_ID,
   type NationalLanguage,
   decodeGsm7,
   encodeGsm7,
+  hasLockingShift,
   packSeptets,
   unpackSeptets,
 } from '../encoding/gsm7.js';
@@ -30,13 +32,23 @@ export interface ParsedUdh {
   length: number;
   elements: InformationElement[];
   concat?: ConcatInfo;
-  /** Announced national single shift table. */
+  /** Announced national single shift table (IE 0x24). */
   shift?: NationalLanguage;
+  /** Announced national locking shift table (IE 0x25). */
+  locking?: NationalLanguage;
 }
 
 const LANGUAGE_BY_ID = new Map<number, NationalLanguage>(
   (Object.entries(NATIONAL_LANGUAGE_ID) as [NationalLanguage, number][]).map(([k, v]) => [v, k]),
 );
+
+/** National tables announced by a UDH or carried by a segment. */
+function gsm7TablesOf(src: { shift?: NationalLanguage; locking?: NationalLanguage } | undefined): Gsm7Tables {
+  return {
+    ...(src?.shift ? { single: src.shift } : {}),
+    ...(src?.locking ? { locking: src.locking } : {}),
+  };
+}
 
 export function buildUdh(elements: InformationElement[]): Buffer {
   const body = Buffer.concat(
@@ -67,6 +79,9 @@ export function parseUdh(buf: Uint8Array): ParsedUdh | undefined {
     } else if (iei === UDH_IEI.NATIONAL_SINGLE_SHIFT && len === 1) {
       const lang = LANGUAGE_BY_ID.get(data[0]!);
       if (lang) result.shift = lang;
+    } else if (iei === UDH_IEI.NATIONAL_LOCKING_SHIFT && len === 1) {
+      const lang = LANGUAGE_BY_ID.get(data[0]!);
+      if (lang && hasLockingShift(lang)) result.locking = lang;
     }
     i += 2 + len;
   }
@@ -109,6 +124,7 @@ export interface BuildPartsOptions extends SegmentOptions {
 export interface BuiltParts {
   encoding: string;
   shift?: NationalLanguage;
+  locking?: NationalLanguage;
   dataCoding: number;
   strategy: MultipartStrategy;
   parts: OutboundPart[];
@@ -117,14 +133,15 @@ export interface BuiltParts {
 /** Splits and encodes a text into PDUs ready to send. */
 export function buildParts(text: string, options: BuildPartsOptions): BuiltParts {
   const split = splitText(text, options);
-  const { codec, shift, strategy } = split;
+  const { codec, shift, locking, strategy } = split;
+  const tables = { ...(shift ? { single: shift } : {}), ...(locking ? { locking } : {}) };
   const total = split.parts.length;
   const multipart = total > 1;
   const baseEsm = options.esmClass ?? 0;
   const reference = options.reference;
 
   const encodeBody = (part: string): Buffer =>
-    codec.name === 'gsm7' ? encodeGsm7(part, shift) : codec.encode(part);
+    codec.name === 'gsm7' ? encodeGsm7(part, tables) : codec.encode(part);
 
   const parts = split.parts.map((part, idx): OutboundPart => {
     const ies: InformationElement[] = [];
@@ -139,6 +156,8 @@ export function buildParts(text: string, options: BuildPartsOptions): BuiltParts
     }
     if (shift)
       ies.push({ iei: UDH_IEI.NATIONAL_SINGLE_SHIFT, data: Buffer.from([NATIONAL_LANGUAGE_ID[shift]]) });
+    if (locking)
+      ies.push({ iei: UDH_IEI.NATIONAL_LOCKING_SHIFT, data: Buffer.from([NATIONAL_LANGUAGE_ID[locking]]) });
 
     const udh = ies.length > 0 ? buildUdh(ies) : undefined;
     let body = encodeBody(part);
@@ -167,6 +186,7 @@ export function buildParts(text: string, options: BuildPartsOptions): BuiltParts
     strategy,
     parts,
     ...(shift ? { shift } : {}),
+    ...(locking ? { locking } : {}),
   };
 }
 
@@ -227,7 +247,7 @@ export function decodeMessageContent(
   if (udh) result.udh = udh;
   if (codec) {
     result.encoding = codec.name;
-    result.text = isGsm ? decodeGsm7(body, udh?.shift) : codec.decode(body);
+    result.text = isGsm ? decodeGsm7(body, gsm7TablesOf(udh)) : codec.decode(body);
   }
   const concat =
     udh?.concat ??
@@ -251,6 +271,7 @@ export interface ReassemblySegment<T = unknown> {
   body: Buffer;
   dataCoding: number;
   shift?: NationalLanguage;
+  locking?: NationalLanguage;
   /** Free-form attached data (e.g. the original PDU). */
   meta: T;
 }
@@ -363,7 +384,7 @@ export class Reassembler<T = unknown> {
       segments,
       missing,
     };
-    if (codec) msg.text = codec.name === 'gsm7' ? decodeGsm7(body, sample.shift) : codec.decode(body);
+    if (codec) msg.text = codec.name === 'gsm7' ? decodeGsm7(body, gsm7TablesOf(sample)) : codec.decode(body);
     return msg;
   }
 }

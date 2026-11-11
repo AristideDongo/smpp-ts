@@ -19,6 +19,8 @@ Node ≥ 20, Bun and Deno · ESM + CJS · `.d.ts` declarations included.
 
 ```sh
 npm install smpp-ts
+# Deno
+deno add jsr:@smpp-ts/smpp-ts
 ```
 
 ## Client
@@ -105,8 +107,26 @@ await client.sendText({ to, from, text, registeredDelivery: true, reference: 'sm
 - Only sends with `registeredDelivery: true` (final receipt requested) are tracked.
 - `TIMEOUT`: not every final receipt arrived within `ttl` (24 h by default).
 - Bounded memory: `trackDeliveries: { ttl, maxTracked }` (100,000 messages by default). A receipt that arrives before its `submit_sm_resp` is kept for 60 s.
-- Tracking is in memory. After a restart, match receipts (`deliveryReport`) against your own records by `messageId`.
+- Tracking is in memory by default. To survive a restart, give it a store (Redis, SQL, a file…): every change is written through, and the next client reloads it before its first bind.
 - `DeliveryTracker` is exported for standalone use, for example across several clients.
+
+```ts
+const store: DeliveryTrackerStore = {
+  save: (record) => redis.hset('smpp:tracking', record.key, JSON.stringify(record)),
+  delete: (key) => redis.hdel('smpp:tracking', key),
+  load: async () => Object.values(await redis.hgetall('smpp:tracking')).map((v) => JSON.parse(v)),
+};
+new SmppClient({ …, trackDeliveries: { store } });
+```
+
+Records are plain data (`JSON.stringify` works, dates are revived on reload). If the store fails, tracking goes on in memory and the error is logged. The library ships no storage: the store belongs to the application.
+
+Two other sources can be plugged in the same way:
+
+| Option | Default | Use |
+|---|---|---|
+| `sequenceGenerator: { next() }` | Counter per session, from 1 | Keep `sequence_number` values going across restarts. Called synchronously; values in flight are skipped |
+| `concatReference: () => number` | Counter from a random value | Share long-message references between processes that send to the same numbers (`SmppPool` already shares them between its binds) |
 
 ### Errors
 
@@ -147,11 +167,12 @@ An `error` event without a listener does not end the process: it goes to the log
 
 While the socket write buffer is full, the session stops reading until the peer catches up (backpressure in both directions).
 
-Every request accepts an `AbortSignal`, and so does `sendText`:
+Every request accepts an `AbortSignal`, and so do `sendText` and `connect`:
 
 ```ts
 const ac = new AbortController();
 setTimeout(() => ac.abort(), 2_000);
+await client.connect({ signal: AbortSignal.timeout(5_000) });
 await client.sendText({ to, from, text, signal: ac.signal });
 await client.submit(params, { signal: ac.signal });
 ```
@@ -268,6 +289,7 @@ countSegments('Hello {world} €');
 // { encoding: 'gsm7', segments: 1, units: 18, perSegment: 160, remaining: 142, … }
 
 detectEncoding('Şişli', { shiftTables: ['tr'] });   // { encoding: 'gsm7', shift: 'tr' }
+detectEncoding('नमस्ते', { shiftTables: ['hi'] });  // { encoding: 'gsm7', shift: 'hi', locking: 'hi' }
 parseDlr('id:123 sub:001 dlvrd:001 … stat:DELIVRD err:000 text:…');
 formatRelativeTime(2 * 3600_000);                    // '000000020000000R'
 ```
@@ -278,7 +300,24 @@ formatRelativeTime(2 * 3600_000);                    // '000000020000000R'
 | Latin-1 | 0x03 | 140 characters | 134 characters |
 | UCS2 | 0x08 | 70 units | 67 units |
 
-Characters from the GSM extension table (`€ [ ] { } \ ^ ~ |`) count as 2. Automatic detection only uses Latin-1 and the national shift tables (Turkish, Spanish, Portuguese) if you allow them, because many operators do not support them. With a forced encoding, unrepresentable text throws instead of being silently replaced with `?`. The `encodings` registry accepts operator-specific encodings.
+Characters from the GSM extension table (`€ [ ] { } \ ^ ~ |`) count as 2. Automatic detection only uses Latin-1 and the national language tables if you allow them, because many operators and handsets do not support them. With a forced encoding, unrepresentable text throws instead of being silently replaced with `?`. The `encodings` registry accepts operator-specific encodings.
+
+#### National language tables (3GPP TS 23.038)
+
+All 13 languages of the standard: Turkish (`tr`), Spanish (`es`), Portuguese (`pt`), Bengali and Assamese (`bn`), Gujarati (`gu`), Hindi (`hi`), Kannada (`kn`), Malayalam (`ml`), Oriya (`or`), Punjabi (`pa`), Tamil (`ta`), Telugu (`te`) and Urdu (`ur`).
+
+- The **single shift** table (UDH IE 0x24, 3 octets) replaces the extension table: its characters cost 2 septets.
+- The **locking shift** table (UDH IE 0x25, 3 octets) replaces the default alphabet: its characters cost 1 septet. Every language but Spanish has one.
+
+```ts
+const client = new SmppClient({ …, multipart: { shiftTables: ['hi'] } });
+await client.sendText({ to, from, text: 'नमस्ते, आपका कोड 123456 है।' });
+// GSM7 + Hindi locking and single shift tables: 152 characters per SMS instead of 70 in UCS2
+```
+
+For each allowed language, detection tries the single shift table alone first, then both tables. `shift` and `locking` force them in `sendText` / `countSegments`. Incoming messages that announce these tables are decoded automatically.
+
+Check with the operator first: a handset that does not know a table displays the wrong characters.
 
 ## Logs and metrics
 
@@ -330,6 +369,36 @@ API reference and guides: **https://aristidedongo.github.io/smpp-ts/**
 - [Building an SMPP server](docs/guides/building-a-server.md)
 - [Going to production](docs/PRODUCTION.md)
 - [Comparison with other SMPP libraries](docs/guides/comparison.md)
+## Interoperability
+
+Every pull request tests the library against implementations it did not write: the client against the **smscsim** (Go) and **jsmpp** (Java) SMSCs, the server against the **python-smpplib** (Python) and **gosmpp** (Go) clients. Matrix and instructions: [test/interop/README.md](test/interop/README.md).
+## Command line
+
+The package ships a command with two tools, handy when you have no access to an operator's test SMSC yet.
+
+**SMSC simulator**: accepts binds, answers every `submit_sm`, sends receipts.
+
+```sh
+npx smpp-ts smsc --port 2775 --system-id demo --password secret --dlr random --echo
+```
+
+| Option | Default | Effect |
+|---|---|---|
+| `--port`, `--host` | 2775, 127.0.0.1 | Where to listen (local only by default) |
+| `--system-id`, `--password` | any | Credentials to accept |
+| `--dlr` | `delivered` | Receipts: `delivered`, `undeliverable`, `random` (80% delivered), `none` |
+| `--dlr-delay` | 1000 ms | Delay before each receipt |
+| `--echo` | off | Answers each SMS with an MO `echo: <text>` |
+| `--tls-key`, `--tls-cert` | none | Serves `ssmpp://` |
+
+**Send an SMS**, and optionally wait for its receipt (exit code 0 if delivered):
+
+```sh
+npx smpp-ts send --url smpp://127.0.0.1:2775 --system-id demo --password secret \
+  --from MYAPP --to +2250700000000 --text "Your code is 123456" --dlr
+```
+
+For an SMSC with a self-signed certificate, `--ca smsc-ca.pem`: verification stays on.
 
 ## Going to production
 
@@ -368,7 +437,7 @@ npm test               # unit, property, fuzzing (20,000 iterations), integratio
 npm run fuzz           # parser fuzzing, 1,000,000 iterations
 npm run coverage
 npm run test:runtime   # smoke test on the built package (also: bun / deno run -A test/runtime/smoke.mjs)
-npm run test:interop   # against a third-party SMSC, see test/interop/README.md
+npm run test:interop   # against third-party SMSCs and clients, see test/interop/README.md
 npm run bench          # benchmarks (see Performance)
 npm run docs           # API reference and guides in docs-site/
 npm run typecheck && npm run lint && npm run build
