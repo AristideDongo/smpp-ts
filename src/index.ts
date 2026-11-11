@@ -117,14 +117,17 @@ export {
 } from './encoding/registry.js';
 export type { TextCodec } from './encoding/registry.js';
 export {
+  NATIONAL_LANGUAGES,
+  NATIONAL_LANGUAGE_ID,
   canEncodeGsm7,
   decodeGsm7,
   encodeGsm7,
   gsm7Length,
+  hasLockingShift,
   packSeptets,
   unpackSeptets,
 } from './encoding/gsm7.js';
-export type { NationalLanguage } from './encoding/gsm7.js';
+export type { Gsm7Shift, Gsm7Tables, NationalLanguage } from './encoding/gsm7.js';
 export { detectEncoding } from './encoding/detect.js';
 export type { DetectOptions, DetectionResult, DetectedEncoding } from './encoding/detect.js';
 

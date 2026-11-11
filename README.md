@@ -286,6 +286,7 @@ countSegments('Hello {world} €');
 // { encoding: 'gsm7', segments: 1, units: 18, perSegment: 160, remaining: 142, … }
 
 detectEncoding('Şişli', { shiftTables: ['tr'] });   // { encoding: 'gsm7', shift: 'tr' }
+detectEncoding('नमस्ते', { shiftTables: ['hi'] });  // { encoding: 'gsm7', shift: 'hi', locking: 'hi' }
 parseDlr('id:123 sub:001 dlvrd:001 … stat:DELIVRD err:000 text:…');
 formatRelativeTime(2 * 3600_000);                    // '000000020000000R'
 ```
@@ -296,7 +297,24 @@ formatRelativeTime(2 * 3600_000);                    // '000000020000000R'
 | Latin-1 | 0x03 | 140 characters | 134 characters |
 | UCS2 | 0x08 | 70 units | 67 units |
 
-Characters from the GSM extension table (`€ [ ] { } \ ^ ~ |`) count as 2. Automatic detection only uses Latin-1 and the national shift tables (Turkish, Spanish, Portuguese) if you allow them, because many operators do not support them. With a forced encoding, unrepresentable text throws instead of being silently replaced with `?`. The `encodings` registry accepts operator-specific encodings.
+Characters from the GSM extension table (`€ [ ] { } \ ^ ~ |`) count as 2. Automatic detection only uses Latin-1 and the national language tables if you allow them, because many operators and handsets do not support them. With a forced encoding, unrepresentable text throws instead of being silently replaced with `?`. The `encodings` registry accepts operator-specific encodings.
+
+#### National language tables (3GPP TS 23.038)
+
+All 13 languages of the standard: Turkish (`tr`), Spanish (`es`), Portuguese (`pt`), Bengali and Assamese (`bn`), Gujarati (`gu`), Hindi (`hi`), Kannada (`kn`), Malayalam (`ml`), Oriya (`or`), Punjabi (`pa`), Tamil (`ta`), Telugu (`te`) and Urdu (`ur`).
+
+- The **single shift** table (UDH IE 0x24, 3 octets) replaces the extension table: its characters cost 2 septets.
+- The **locking shift** table (UDH IE 0x25, 3 octets) replaces the default alphabet: its characters cost 1 septet. Every language but Spanish has one.
+
+```ts
+const client = new SmppClient({ …, multipart: { shiftTables: ['hi'] } });
+await client.sendText({ to, from, text: 'नमस्ते, आपका कोड 123456 है।' });
+// GSM7 + Hindi locking and single shift tables: 152 characters per SMS instead of 70 in UCS2
+```
+
+For each allowed language, detection tries the single shift table alone first, then both tables. `shift` and `locking` force them in `sendText` / `countSegments`. Incoming messages that announce these tables are decoded automatically.
+
+Check with the operator first: a handset that does not know a table displays the wrong characters.
 
 ## Logs and metrics
 

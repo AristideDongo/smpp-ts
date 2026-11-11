@@ -118,7 +118,10 @@ export interface SmppClientOptions {
   trackDeliveries?: boolean | DeliveryTrackerOptions;
   multipart?: {
     strategy?: MultipartStrategy;
-    /** National shift tables allowed during automatic detection. */
+    /**
+     * National languages allowed during automatic detection (single shift, then locking + single).
+     * Default: none.
+     */
     shiftTables?: NationalLanguage[];
     allowLatin1?: boolean;
     packGsm7?: boolean;
@@ -150,7 +153,10 @@ export interface SendTextOptions {
   text: string;
   /** Forced encoding (`gsm7`, `latin1`, `ucs2`, `ascii` or a registered encoding). */
   encoding?: string;
+  /** Forced national single shift table (GSM7). */
   shift?: NationalLanguage;
+  /** Forced national locking shift table (GSM7). */
+  locking?: NationalLanguage;
   strategy?: MultipartStrategy;
   /** `true` = receipt for the final outcome; or a registered_delivery value. */
   registeredDelivery?: boolean | number;
@@ -605,6 +611,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
       strategy: opts.strategy ?? mp.strategy ?? 'udh8',
       ...(opts.encoding ? { encoding: opts.encoding } : {}),
       ...(opts.shift ? { shift: opts.shift } : {}),
+      ...(opts.locking ? { locking: opts.locking } : {}),
       ...(mp.shiftTables ? { shiftTables: mp.shiftTables } : {}),
       ...(mp.allowLatin1 !== undefined ? { allowLatin1: mp.allowLatin1 } : {}),
       ...(mp.packGsm7 !== undefined ? { packGsm7: mp.packGsm7 } : {}),
