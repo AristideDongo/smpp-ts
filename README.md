@@ -1,5 +1,9 @@
 # smpp-ts
 
+[![npm](https://img.shields.io/npm/v/smpp-ts.svg)](https://www.npmjs.com/package/smpp-ts)
+[![CI](https://github.com/AristideDongo/smpp-ts/actions/workflows/ci.yml/badge.svg)](https://github.com/AristideDongo/smpp-ts/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Client et serveur **SMPP v3.4 / v5.0** en TypeScript : sûr par défaut, fiable en production, sans aucune dépendance runtime.
 
 - **Sûr par défaut** : TLS vérifié (TLS 1.2 minimum), mots de passe jamais journalisés, chaque champ est validé avant l'envoi et à la réception.
