@@ -96,6 +96,35 @@ jobs:
       - if: always()
         run: cat smscsim.log
 
+  bench:
+    # Same runner for the base branch and the PR: absolute numbers vary between runners,
+    # a relative comparison does not.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            base/package-lock.json
+      - run: npm ci && npm run build
+      - run: npm ci && npm run build
+        working-directory: base
+      # The PR's bench script measures both builds, so the base needs no bench/ folder.
+      - run: node bench/run.mjs --dist base/dist --runs 5 --json base.json
+      - run: node bench/run.mjs --runs 5 --json head.json
+      - name: Compare
+        run: |
+          set -o pipefail
+          node bench/compare.mjs base.json head.json | tee -a "$GITHUB_STEP_SUMMARY"
+
   fuzz:
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
