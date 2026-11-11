@@ -1,0 +1,45 @@
+# Jasmin SMS gateway (https://github.com/jookies/jasmin) for the compatibility suite.
+#   docker compose -f test/interop/jasmin/docker-compose.yml up -d --wait
+#   npm run test:jasmin
+#
+# smpp-ts client  ──SMPP 2775──▶  Jasmin  ──SMPP (smppccm "upstream")──▶  smpp-ts SmppServer
+#                                 jCli 8990                              started by the test on the host
+#
+# The test configures Jasmin through jCli (users, connector, routes) and plays the upstream SMSC
+# itself, so it controls message ids, receipts, errors and MO traffic.
+services:
+  redis:
+    image: redis:7.4-alpine
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      interval: 2s
+      retries: 30
+
+  rabbit-mq:
+    image: rabbitmq:3.13-alpine
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 3s
+      retries: 40
+
+  jasmin:
+    image: jookies/jasmin:0.11.0
+    platform: linux/amd64
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbit-mq:
+        condition: service_healthy
+    environment:
+      REDIS_CLIENT_HOST: redis
+      AMQP_BROKER_HOST: rabbit-mq
+    # The upstream SMSC runs on the host (the test process).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:2775:2775" # SMPP server (ESMEs bind here)
+      - "127.0.0.1:8990:8990" # jCli (management console)
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket; [socket.create_connection(('127.0.0.1', p), 2) for p in (2775, 8990)]\""]
+      interval: 3s
+      retries: 40
