@@ -1,5 +1,5 @@
-// Test de fumée multi-runtime (Node, Bun, Deno) sur le paquet compilé (`npm run build`).
-// Usage : node test/runtime/smoke.mjs | bun test/runtime/smoke.mjs | deno run -A test/runtime/smoke.mjs
+// Multi-runtime smoke test (Node, Bun, Deno) on the built package (`npm run build`).
+// Usage: node test/runtime/smoke.mjs | bun test/runtime/smoke.mjs | deno run -A test/runtime/smoke.mjs
 import assert from 'node:assert/strict';
 import { SmppClient, SmppServer, countSegments, parseDlr, safeCompare } from '../../dist/index.js';
 
@@ -30,11 +30,11 @@ const client = new SmppClient({
 });
 
 try {
-  // Encodages (Buffer, UTF-16) et utilitaires purs
+  // Encodings (Buffer, UTF-16) and pure utilities
   assert.equal(countSegments('Votre code est 123456 🎉').encoding, 'ucs2');
   assert.equal(parseDlr('id:1 sub:001 dlvrd:001 stat:DELIVRD err:000')?.stat, 'DELIVRD');
 
-  // Transport TCP, framing, machine à états
+  // TCP transport, framing, state machine
   await client.connect();
   assert.equal(client.state, 'BOUND_TRX');
 
@@ -46,7 +46,7 @@ try {
   });
   assert.equal(result.parts, 3);
 
-  // Accusés : serveur → client, regroupés par le suivi multi-segments
+  // Receipts: server → client, grouped by multipart tracking
   const status = new Promise((resolve) => client.once('messageStatus', resolve));
   const session = [...server.sessions][0];
   for (const messageId of result.messageIds) {

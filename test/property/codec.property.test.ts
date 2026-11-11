@@ -101,7 +101,7 @@ describe('property: decode(encode(pdu)) ≡ pdu', () => {
             if (k === 'sm_length') continue;
             expect(decoded[k], k).toEqual(v);
           }
-          // Ré-encoder le PDU décodé redonne exactement les mêmes octets.
+          // Re-encoding the decoded PDU gives exactly the same bytes.
           expect(encodePdu(decoded as unknown as PduInput).equals(buf)).toBe(true);
         }),
         { numRuns: Math.max(20, Math.floor(RUNS / 5)) },
@@ -179,7 +179,7 @@ describe('property: split then reassemble = original text', () => {
           for (const p of built.parts) expect(p.short_message!.length).toBeLessThanOrEqual(140);
           const r = new Reassembler();
           let result: string | undefined;
-          // Ordre inverse pour éprouver le réassemblage.
+          // Reverse order to exercise reassembly.
           for (const part of [...built.parts].reverse()) {
             const content = decodeMessageContent({ ...part, short_message: part.short_message! });
             if (!content.concat) {

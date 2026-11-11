@@ -1,5 +1,5 @@
 /**
- * Serveur : simulateur de SMSC qui accepte les submit_sm et renvoie un accusé de réception.
+ * Server: SMSC simulator that accepts submit_sm and sends back a delivery receipt.
  *
  *   npx tsx examples/server.ts
  */
@@ -9,7 +9,7 @@ import { COMMAND_STATUS, SmppServer, safeCompare } from '../src/index.js';
 const accounts = new Map([['acme', { password: 'secret', name: 'ACME' }]]);
 
 const server = new SmppServer<{ name: string }>({
-  // Même réponse (ESME_RBINDFAIL) que le compte existe ou non.
+  // Same response (ESME_RBINDFAIL) whether the account exists or not.
   authenticate: ({ system_id, password }) => {
     const account = accounts.get(system_id);
     const ok = safeCompare(password, account?.password ?? '');

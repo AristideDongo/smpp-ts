@@ -1,5 +1,5 @@
 /**
- * Non-régression des bugs de session (§3) contre un faux SMSC piloté à la main.
+ * Regression tests for session bugs, against a hand-driven fake SMSC.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -38,7 +38,7 @@ function client(port: number, options: Partial<SmppClientOptions> = {}) {
 
 describe('BUG-01: every request has a timeout', () => {
   it('rejects with SmppTimeoutError and frees the window slot', async () => {
-    const s = await smsc(); // ne répond jamais à submit_sm
+    const s = await smsc(); // never answers submit_sm
     const c = client(s.port, { requestTimeout: 100, window: 1 });
     await c.connect();
     const t0 = Date.now();
@@ -47,7 +47,7 @@ describe('BUG-01: every request has a timeout', () => {
     expect((err as SmppTimeoutError).written).toBe(true);
     expect(Date.now() - t0).toBeLessThan(1000);
     expect(c.inflight).toBe(0);
-    // La fenêtre est libérée : une nouvelle requête peut partir.
+    // The window slot is released: a new request can go out.
     const second = c.submit({ destination_addr: '2' }).catch((e: unknown) => e);
     await until(() => s.connections[0]!.received.filter((p) => p.command === 'submit_sm').length === 2);
     expect(await second).toBeInstanceOf(SmppTimeoutError);
@@ -69,7 +69,7 @@ describe('BUG-01: every request has a timeout', () => {
     const elapsed = Date.now() - t0;
     expect(results.every((r) => r instanceof SmppTimeoutError)).toBe(true);
     expect(elapsed).toBeLessThan(150 + 100);
-    // Les requêtes restées en file n'ont jamais été écrites.
+    // Requests still queued were never written.
     expect(results.filter((r) => (r as SmppTimeoutError).written === false)).toHaveLength(4);
     expect(c.queueSize).toBe(0);
   });
@@ -135,7 +135,7 @@ describe('BUG-03: reconnection does not silently drop pending requests', () => {
     const err = await c.submit({ destination_addr: '1' }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(SmppConnectionClosedError);
     expect((err as SmppConnectionClosedError).written).toBe(true);
-    // Pas de renvoi automatique d'un message peut-être accepté (pas de doublon).
+    // No automatic resend of a message that may have been accepted (no duplicate).
     const res = await c.submit({ destination_addr: '2' });
     expect(res.message_id).toBe('after');
     expect(s.connections).toHaveLength(2);
@@ -146,7 +146,7 @@ describe('BUG-03: reconnection does not silently drop pending requests', () => {
 describe('BUG-07: enquire_link without response is detected', () => {
   it('declares the session dead and reconnects', async () => {
     const s = await smsc((pdu, conn) => {
-      if (pdu.command !== 'enquire_link') defaultBehaviour(pdu, conn); // ignore les enquire_link
+      if (pdu.command !== 'enquire_link') defaultBehaviour(pdu, conn); // ignore enquire_link
     });
     const c = client(s.port, {
       enquireLinkInterval: 40,
@@ -202,7 +202,7 @@ describe('BUG-08: a parsing error does not stop the session', () => {
     c.on('deliver', (p) => delivered.push(p));
     await c.connect();
     const conn = s.connections[0]!;
-    // deliver_sm dont le service_type n'est jamais terminé.
+    // deliver_sm whose service_type is never terminated.
     const bad = Buffer.concat([Buffer.alloc(16), Buffer.from('ABCDEFGHIJ', 'latin1')]);
     bad.writeUInt32BE(bad.length, 0);
     bad.writeUInt32BE(COMMANDS.deliver_sm.id, 4);
@@ -211,7 +211,7 @@ describe('BUG-08: a parsing error does not stop the session', () => {
     const { pdu } = await s.waitFor((p) => p.command === 'generic_nack');
     expect(pdu.sequence_number).toBe(7);
     expect(pdu.command_status).not.toBe(0);
-    // La session continue : un deliver_sm valide est traité.
+    // The session goes on: a valid deliver_sm is processed.
     conn.send({
       command: 'deliver_sm',
       sequence_number: 8,

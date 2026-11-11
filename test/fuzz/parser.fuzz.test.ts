@@ -1,6 +1,6 @@
 /**
- * Fuzzing du parseur : aucune entrée, même malveillante, ne doit lever autre chose qu'une SmppDecodeError.
- * Par défaut 20 000 itérations par propriété ; `npm run fuzz` en lance 1 000 000 (critère §14).
+ * Parser fuzzing: no input, even malicious, may throw anything other than a SmppDecodeError.
+ * 20 000 iterations per property by default; `npm run fuzz` runs 1 000 000.
  */
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
@@ -15,8 +15,8 @@ import { decodeMessageContent, parseUdh } from '../../src/utils/multipart.js';
 const RUNS = Number(process.env.FUZZ_RUNS ?? 20_000);
 
 /**
- * Exécute une propriété par lots de 50 000 itérations, en rendant la main entre deux lots :
- * un fuzzing d'un million d'itérations ne bloque pas le worker de Vitest.
+ * Runs a property in batches of 50 000 iterations, yielding between batches:
+ * a one-million-iteration run does not block the Vitest worker.
  */
 async function assertInBatches<T>(property: fc.IProperty<T>, runs: number): Promise<void> {
   const batch = 50_000;
@@ -40,7 +40,7 @@ function decodeSafely(buf: Buffer): void {
   }
 }
 
-/** PDU avec en-tête cohérent (longueur exacte, command_id connu) et corps aléatoire. */
+/** PDU with a consistent header (exact length, known command_id) and a random body. */
 const structuredPdu = fc
   .tuple(
     fc.constantFrom(...ids),
@@ -58,7 +58,7 @@ const structuredPdu = fc
     return buf;
   });
 
-/** PDU valide altéré : octets modifiés, tronqué ou allongé. */
+/** Valid PDU, tampered with: bytes changed, truncated or extended. */
 const mutatedPdu = fc
   .tuple(
     fc.constantFrom(

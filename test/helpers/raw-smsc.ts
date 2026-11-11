@@ -12,7 +12,7 @@ export interface RawConnection {
 export interface RawSmsc {
   port: number;
   connections: RawConnection[];
-  /** Attend un PDU reçu satisfaisant le prédicat (toutes connexions). */
+  /** Waits for a received PDU matching the predicate (any connection). */
   waitFor(
     pred: (pdu: Pdu, conn: RawConnection) => boolean,
     timeoutMs?: number,
@@ -21,8 +21,8 @@ export interface RawSmsc {
 }
 
 /**
- * Faux SMSC piloté à la main : chaque PDU reçu est passé à `onPdu`, qui décide quoi répondre.
- * Par défaut, accepte tout bind et répond aux enquire_link / unbind.
+ * Hand-driven fake SMSC: each received PDU goes to `onPdu`, which decides what to answer.
+ * By default, accepts any bind and answers enquire_link / unbind.
  */
 export async function createRawSmsc(
   onPdu: (pdu: Pdu, conn: RawConnection) => void = defaultBehaviour,
@@ -114,7 +114,7 @@ export function defaultBehaviour(pdu: Pdu, conn: RawConnection): void {
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Attend qu'une condition devienne vraie. */
+/** Waits until a condition becomes true. */
 export async function until(cond: () => boolean, timeoutMs = 5000, stepMs = 10): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!cond()) {

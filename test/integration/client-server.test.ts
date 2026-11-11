@@ -139,7 +139,7 @@ describe('client ↔ server', () => {
     await until(() => reports.length === 1);
     expect(reports[0]).toMatchObject({ messageId: 'MSG-9', status: 'DELIVERED', source: '2250700000000' });
 
-    // MO en deux segments UDH, envoyés dans le désordre
+    // MO in two UDH segments, sent out of order
     const udh = (seq: number) => Buffer.from([5, 0, 3, 42, 2, seq]);
     await server.deliver('acme', {
       source_addr: '2250700000000',
@@ -370,7 +370,7 @@ describe('client ↔ server', () => {
     await client.connect();
     for (const s of server.sessions) s.destroy();
     await until(() => client.state === 'CLOSED');
-    // Envoyé pendant la coupure : reste en file puis part après le re-bind.
+    // Sent during the outage: stays queued, then goes out after the re-bind.
     const pending = client.submit({ destination_addr: '1' });
     const res = await pending;
     expect(res.message_id).toMatch(/^MSG/);
@@ -479,7 +479,7 @@ describe('client ↔ server', () => {
       bind: { mode: 'transceiver', system_id: 'a', password: 'b' },
       logger,
     });
-    // Appel direct du chemin d'émission d'erreur : doit journaliser et non lever.
+    // Calls the error emission path directly: must log, not throw.
     (client as unknown as { emitError(e: Error & { code: string }): void }).emitError(
       Object.assign(new Error('unheard'), { code: 'X' }),
     );

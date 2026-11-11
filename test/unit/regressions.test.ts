@@ -1,6 +1,6 @@
 /**
- * Non-régression des bugs purement « codec » (BUG-04, BUG-05, BUG-06).
- * Les bugs liés aux sessions (BUG-01, 02, 03, 07, 08) sont dans test/integration/regressions.test.ts.
+ * Regression tests for codec-only bugs (BUG-04, BUG-05, BUG-06).
+ * Session bugs (BUG-01, 02, 03, 07, 08) are in test/integration/regressions.test.ts.
  */
 import { describe, expect, it } from 'vitest';
 import { decodePdu, encodePdu } from '../../src/codec/pdu.js';
@@ -77,7 +77,7 @@ describe('BUG-06: bounded C-Octet String reads', () => {
   });
 
   it('does not leak into the following fields', () => {
-    // password (max 9) non terminé : ne doit pas absorber system_type et la suite.
+    // unterminated password (max 9): must not swallow system_type and what follows.
     const body = Buffer.concat([
       Buffer.from('id\0', 'latin1'),
       Buffer.from('123456789012', 'latin1'),

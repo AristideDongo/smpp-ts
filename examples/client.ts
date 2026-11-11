@@ -1,5 +1,5 @@
 /**
- * Client : connexion TLS, envoi d'un SMS (découpé si nécessaire), accusés de réception, arrêt gracieux.
+ * Client: TLS connection, sending an SMS (split if needed), delivery receipts, graceful shutdown.
  *
  *   SMPP_URL=ssmpp://smsc.example.com:3550 SMPP_USER=xxx SMPP_PASSWORD=yyy npx tsx examples/client.ts
  */
@@ -13,7 +13,7 @@ import {
 
 const client = new SmppClient({
   url: process.env.SMPP_URL ?? 'smpp://127.0.0.1:2775',
-  // SMSC à certificat auto-signé : fournir son autorité plutôt que désactiver la vérification.
+  // SMSC with a self-signed certificate: provide its CA rather than disabling verification.
   // tls: { ca: readFileSync('smsc-ca.pem') },
   bind: {
     mode: 'transceiver',
@@ -26,7 +26,7 @@ const client = new SmppClient({
   requestTimeout: 10_000,
   logger: console,
   redactContent: true,
-  // Regroupe les accusés des segments d'un SMS long : un seul événement `messageStatus` par message.
+  // Groups the receipts of a long SMS's segments: one `messageStatus` event per message.
   trackDeliveries: true,
 });
 
@@ -43,19 +43,19 @@ try {
   const result = await client.sendText({
     to: '+2250700000000',
     from: 'MISSOU',
-    text: 'Votre code est 123456 🎉',
+    text: 'Your code is 123456 🎉',
     registeredDelivery: true,
-    reference: 'otp-42', // votre identifiant, renvoyé dans `messageStatus`
+    reference: 'otp-42', // your identifier, echoed in `messageStatus`
   });
   console.log('sent', result); // { messageIds: ['...'], parts: 1, encoding: 'UCS2' }
 } catch (err) {
   if (err instanceof SmppValidationError) {
-    // Rien n'est parti : expéditeur trop long, numéro invalide…
+    // Nothing was sent: sender too long, invalid number…
     console.error(`invalid ${err.field}: ${err.message}`);
   } else if (err instanceof SmppStatusError) {
     console.error(`refused by the SMSC: ${err.statusName} (${err.category})`);
   } else if (err instanceof SmppTimeoutError || err instanceof SmppConnectionClosedError) {
-    // `written: false` → jamais parti, renvoi sans risque ; `true` → peut-être accepté, risque de doublon.
+    // `written: false` → never sent, safe to resend; `true` → may have been accepted, resending may duplicate it.
     console.error(`no answer (written: ${err.written})`);
   } else {
     throw err;

@@ -1,5 +1,5 @@
-// Interopérabilité contre un SMSC tiers : simulateur Docker en CI, ou SMSC de test d'un opérateur.
-// Configuration par variables d'environnement (cf. test/interop/README.md).
+// Interoperability against a third-party SMSC: simulator in CI, or an operator's test SMSC.
+// Configured through environment variables (see test/interop/README.md).
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -13,7 +13,7 @@ const env = process.env;
 const url = env.SMPP_INTEROP_URL;
 const to = env.SMPP_INTEROP_TO ?? '+2250700000000';
 const from = env.SMPP_INTEROP_FROM ?? 'SMPPTS';
-/** Le SMSC renvoie-t-il des accusés ? (`0` pour un SMSC qui n'en envoie pas en test) */
+/** Does the SMSC send receipts? (`0` for an SMSC that sends none in test) */
 const expectDlr = env.SMPP_INTEROP_EXPECT_DLR !== '0';
 const dlrTimeout = Number(env.SMPP_INTEROP_DLR_TIMEOUT ?? 30_000);
 
@@ -36,7 +36,7 @@ function makeClient(options: Partial<SmppClientOptions> = {}): SmppClient {
       ...(env.SMPP_INTEROP_SYSTEM_TYPE ? { system_type: env.SMPP_INTEROP_SYSTEM_TYPE } : {}),
     },
     reconnect: false,
-    // SMSC à certificat auto-signé : fournir son CA plutôt que désactiver la vérification (SEC-01).
+    // SMSC with a self-signed certificate: provide its CA rather than disabling verification (SEC-01).
     ...(env.SMPP_INTEROP_TLS_CA ? { tls: { ca: readFileSync(env.SMPP_INTEROP_TLS_CA) } } : {}),
     ...options,
   });

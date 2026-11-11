@@ -66,12 +66,12 @@ jobs:
 
   interop:
     runs-on: ubuntu-latest
-    # Simulateur tiers : un échec signale une variante à absorber, sans bloquer la PR
-    # tant que la suite n'a pas tourné au vert sur plusieurs exécutions.
+    # Third-party simulator: a failure flags a variant to handle, without blocking the PR
+    # until the suite has been green over several runs.
     continue-on-error: true
     env:
-      # L'image Docker Hub `ukarim/smscsim:latest` n'est pas compilée pour amd64 :
-      # on compile le simulateur depuis ses sources, à un commit fixé.
+      # The `ukarim/smscsim:latest` Docker Hub image is not built for amd64:
+      # build the simulator from source, at a pinned commit.
       SMSCSIM_REF: 92ca8a83a1c84326421ad61a9cc9eb177931ee5f
     steps:
       - uses: actions/checkout@v4

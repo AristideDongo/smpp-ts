@@ -97,8 +97,8 @@ describe('DeliveryTracker', () => {
 
     tracker.handle(dlr('x', 'DELIVERED'));
     tracker.handle(dlr('y', 'DELIVERED'));
-    tracker.handle(dlr('y', 'DELIVERED')); // remplace sans évincer
-    tracker.handle(dlr('z', 'DELIVERED')); // évince x
+    tracker.handle(dlr('y', 'DELIVERED')); // replaces without evicting
+    tracker.handle(dlr('z', 'DELIVERED')); // evicts x
     tracker.track(['x']);
     tracker.track(['z']);
     expect(statuses.map((s) => s.messageIds[0])).toEqual(['z']);
@@ -112,7 +112,7 @@ describe('DeliveryTracker', () => {
     vi.advanceTimersByTime(5001);
     expect(statuses[0]).toMatchObject({ outcome: 'TIMEOUT', parts: 2 });
     expect(statuses[0]!.reports[1]).toBeUndefined();
-    // un accusé tardif n'est plus rattaché
+    // a late receipt is no longer matched
     expect(tracker.handle(dlr('b', 'DELIVERED'))).toBe(false);
   });
 

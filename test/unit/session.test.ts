@@ -12,7 +12,7 @@ afterEach(() => {
   while (cleanups.length) cleanups.pop()!();
 });
 
-/** Paire de sockets TCP connectées : [côté ESME, côté SMSC]. */
+/** Pair of connected TCP sockets: [ESME side, SMSC side]. */
 async function socketPair(): Promise<[net.Socket, net.Socket]> {
   const server = net.createServer();
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -29,7 +29,7 @@ async function socketPair(): Promise<[net.Socket, net.Socket]> {
   return [client, peer];
 }
 
-/** Sessions ESME et SMSC reliées et bindées en transceiver. */
+/** ESME and SMSC sessions, connected and bound as transceiver. */
 async function boundPair(esmeOpts = {}, smscOpts = {}) {
   const [a, b] = await socketPair();
   const esme = new Session(a, { role: 'esme', enquireLinkInterval: 0, ...esmeOpts });
@@ -55,7 +55,7 @@ describe('Session', () => {
   it('refuses invalid requests before queueing', async () => {
     const [a] = await socketPair();
     const s = new Session(a, { role: 'esme', enquireLinkInterval: 0 });
-    // unbind n'est autorisé qu'une fois bindé
+    // unbind is only allowed once bound
     await expect(s.request('unbind')).rejects.toBeInstanceOf(SmppStateError);
     expect(() => s.send('alert_notification')).toThrow(SmppStateError);
   });
@@ -114,7 +114,7 @@ describe('Session', () => {
     const { esme, smsc } = await boundPair();
     smsc.removeAllListeners('pdu');
     smsc.on('pdu', (p) => {
-      // Répond à un submit_sm par un query_sm_resp portant le même sequence_number.
+      // Answers a submit_sm with a query_sm_resp carrying the same sequence_number.
       smsc.socket.write(encodePdu({ command: 'query_sm_resp', sequence_number: p.sequence_number }));
     });
     await expect(esme.request('submit_sm')).rejects.toThrow(/Expected submit_sm_resp/);
@@ -130,7 +130,7 @@ describe('Session', () => {
         smsc.markBound('receiver');
       }
     });
-    // Mis en file avant le bind, puis interdit en mode receiver.
+    // Queued before the bind, then not allowed in receiver mode.
     const queued = esme.request('submit_sm');
     await esme.bind('receiver', {});
     await expect(queued).rejects.toBeInstanceOf(SmppStateError);
@@ -155,7 +155,7 @@ describe('Session', () => {
   it('rejects its own queue on close with written: false', async () => {
     const { esme, smsc } = await boundPair({ window: 1 });
     smsc.removeAllListeners('pdu');
-    smsc.on('pdu', () => {}); // ne répond jamais
+    smsc.on('pdu', () => {}); // never answers
     const first = esme.request('submit_sm').catch((e: unknown) => e);
     const second = esme.request('submit_sm').catch((e: unknown) => e);
     await sleep(20);
@@ -179,7 +179,7 @@ describe('Session', () => {
       }
       smsc.respond(p as never, { message_id: String(p.sequence_number) });
     });
-    // Trois PDU dans le même paquet TCP.
+    // Three PDUs in the same TCP packet.
     const buf = Buffer.concat(
       [1, 2, 3].map((n) => encodePdu({ command: 'submit_sm', sequence_number: 100 + n })),
     );
@@ -192,7 +192,7 @@ describe('Session', () => {
     const { esme, smsc } = await boundPair({ window: 50 });
     let blocked = 0;
     const write = esme.socket.write.bind(esme.socket);
-    // Simule un socket saturé une écriture sur deux.
+    // Simulates a socket that is full on every other write.
     (esme.socket as unknown as { write: (b: Buffer) => boolean }).write = (b: Buffer) => {
       write(b);
       if (++blocked % 2 === 0) {

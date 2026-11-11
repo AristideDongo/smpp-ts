@@ -127,7 +127,7 @@ describe('SMPP times', () => {
     const t = parseSmppTime('241110153045204+');
     expect(t?.type).toBe('absolute');
     if (t?.type !== 'absolute') throw new Error();
-    // 15:30:45.2 à UTC+1h (4 quarts d'heure) = 14:30:45.2 UTC
+    // 15:30:45.2 at UTC+1h (4 quarter hours) = 14:30:45.2 UTC
     expect(t.date.toISOString()).toBe('2024-11-10T14:30:45.200Z');
     expect(parseSmppTime('241110153045000-')?.type).toBe('absolute');
   });

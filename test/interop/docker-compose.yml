@@ -1,12 +1,12 @@
-# SMSC simulé tiers pour les tests d'interopérabilité.
+# Third-party simulated SMSC for the interoperability tests.
 #   docker compose -f test/interop/docker-compose.yml up -d --build
 #   SMPP_INTEROP_URL=smpp://127.0.0.1:2775 npm run test:interop
 #
-# L'image publiée `ukarim/smscsim:latest` n'est pas compilée pour amd64 :
-# on la construit depuis les sources, à un commit fixé (le même que le CI).
+# The published `ukarim/smscsim:latest` image is not built for amd64:
+# build it from source, at a pinned commit (the same as CI).
 services:
   smscsim:
     build: https://github.com/ukarim/smscsim.git#92ca8a83a1c84326421ad61a9cc9eb177931ee5f
     ports:
       - "127.0.0.1:2775:2775"   # SMPP
-      - "127.0.0.1:12775:12775" # interface web (envoi de MO)
+      - "127.0.0.1:12775:12775" # web UI (sends MO messages)

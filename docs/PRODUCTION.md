@@ -1,36 +1,36 @@
-# Mise en production
+# Going to production
 
-Ce guide sert à brancher `smpp-ts` sur le SMSC d'un opérateur ou d'un agrégateur. La plupart des incidents en production ne viennent pas du code mais d'un réglage qui ne correspond pas à ce que le SMSC attend. Chaque opérateur a ses règles. Posez-lui les questions ci-dessous **avant** d'écrire la configuration.
+This guide covers connecting `smpp-ts` to an operator's or aggregator's SMSC. Most production incidents do not come from code but from a setting that does not match what the SMSC expects, and every operator has its own rules. Ask them the questions below **before** writing the configuration.
 
-## 1. Questions à poser à l'opérateur
+## 1. Questions to ask the operator
 
-| Question | Option `smpp-ts` | Si on se trompe |
+| Question | `smpp-ts` option | If it is wrong |
 |---|---|---|
-| Hôte, port, TLS ou non ? | `url: 'smpp://…'` ou `'ssmpp://…'` | Connexion refusée ou timeout |
-| Certificat TLS signé par une autorité publique ? | `tls: { ca }` s'il est auto-signé | `connect()` échoue (vérification active par défaut) |
-| `system_id`, `password`, `system_type` ? | `bind` | `ESME_RBINDFAIL` |
-| Mode de bind : transmitter, receiver ou transceiver ? | `bind.mode` | Pas d'accusés reçus, ou `ESME_RINVBNDSTS` |
-| Version SMPP : 3.4 ou 5.0 ? | `bind.interface_version` (défaut `0x34`) | Bind refusé par certains SMSC |
-| Combien de sessions simultanées ? | Nombre de `SmppClient` | Binds en trop refusés (`ESME_RALYBND`) |
-| Débit autorisé (SMS/s) par session ? | `rateLimit: { perSecond }` | `ESME_RTHROTTLED` en rafale |
-| Fenêtre (requêtes sans réponse) autorisée ? | `window` (défaut 10) | `ESME_RTHROTTLED` ou coupure |
-| Expéditeurs autorisés : alphanumériques ? numéros ? enregistrés à l'avance ? | `from`, `address` | Message rejeté ou expéditeur remplacé |
-| TON/NPI attendus pour l'expéditeur et le destinataire ? | `sourceTon`, `destTon`… | `ESME_RINVSRCADR`, `ESME_RINVDSTADR` |
-| Format des numéros : international sans `+`, national ? | `address.internationalPrefix` | `ESME_RINVDSTADR` |
-| Encodage par défaut de `data_coding = 0` : GSM7, Latin-1 ? | `encodings` | Accents remplacés par `?` |
-| Messages longs : UDH ou TLV SAR ? | `multipart.strategy` | Segments reçus séparément sur le téléphone |
-| Format des `message_id` dans les accusés (hexadécimal, décimal) ? | `messageIdFormat` | Accusés impossibles à rapprocher |
-| Intervalle d'`enquire_link` attendu ? | `enquireLinkInterval` (défaut 30 s) | Session coupée par le SMSC |
-| Un SMSC de test est-il disponible ? | — | Vous testez en production |
+| Host, port, TLS or not? | `url: 'smpp://…'` or `'ssmpp://…'` | Connection refused or timeout |
+| TLS certificate signed by a public authority? | `tls: { ca }` if self-signed | `connect()` fails (verification is on by default) |
+| `system_id`, `password`, `system_type`? | `bind` | `ESME_RBINDFAIL` |
+| Bind mode: transmitter, receiver or transceiver? | `bind.mode` | No receipts, or `ESME_RINVBNDSTS` |
+| SMPP version: 3.4 or 5.0? | `bind.interface_version` (default `0x34`) | Bind refused by some SMSCs |
+| How many concurrent sessions? | Number of `SmppClient`s | Extra binds refused (`ESME_RALYBND`) |
+| Allowed rate (SMS/s) per session? | `rateLimit: { perSecond }` | `ESME_RTHROTTLED` under bursts |
+| Allowed window (unanswered requests)? | `window` (default 10) | `ESME_RTHROTTLED` or disconnection |
+| Allowed senders: alphanumeric? numbers? registered in advance? | `from`, `address` | Message rejected or sender replaced |
+| Expected TON/NPI for sender and recipient? | `sourceTon`, `destTon`… | `ESME_RINVSRCADR`, `ESME_RINVDSTADR` |
+| Number format: international without `+`, national? | `address.internationalPrefix` | `ESME_RINVDSTADR` |
+| Default encoding for `data_coding = 0`: GSM7, Latin-1? | `encodings` | Accents replaced with `?` |
+| Long messages: UDH or SAR TLVs? | `multipart.strategy` | Segments shown separately on the phone |
+| `message_id` format in receipts (hexadecimal, decimal)? | `messageIdFormat` | Receipts impossible to match |
+| Expected `enquire_link` interval? | `enquireLinkInterval` (default 30 s) | Session dropped by the SMSC |
+| Is a test SMSC available? | — | You are testing in production |
 
-## 2. Configuration type
+## 2. Typical configuration
 
 ```ts
 import { readFileSync } from 'node:fs';
 import { SmppClient, pinoAdapter } from 'smpp-ts';
 
 const client = new SmppClient({
-  url: process.env.SMPP_URL,                     // ssmpp://smsc.operateur.example:3550
+  url: process.env.SMPP_URL,                     // ssmpp://smsc.operator.example:3550
   tls: process.env.SMPP_CA ? { ca: readFileSync(process.env.SMPP_CA) } : undefined,
   bind: {
     mode: 'transceiver',
@@ -38,50 +38,50 @@ const client = new SmppClient({
     password: process.env.SMPP_PASSWORD!,
   },
   window: 10,
-  rateLimit: { perSecond: 50 },                  // la valeur contractuelle, pas plus
-  messageIdFormat: 'as-is',                      // 'hex-to-dec' si l'opérateur l'exige
+  rateLimit: { perSecond: 50 },                  // the contractual rate, no more
+  messageIdFormat: 'as-is',                      // 'hex-to-dec' if the operator requires it
   trackDeliveries: true,
   logger: pinoAdapter(logger),
-  redactContent: true,                           // contenu des SMS = données personnelles
+  redactContent: true,                           // SMS content is personal data
   redactNumbers: true,
 });
 ```
 
-Les identifiants viennent de l'environnement ou d'un coffre-fort, jamais du code. Le mot de passe n'apparaît jamais dans les logs de `smpp-ts`.
+Credentials come from the environment or a secret store, never from the code. The password never appears in `smpp-ts` logs.
 
-## 3. Expéditeur (`from`)
+## 3. Sender (`from`)
 
-- **Alphanumérique** (`MONSERVICE`) : 11 caractères au plus, alphabet GSM. `smpp-ts` refuse au-delà, car les réseaux tronquent ou rejettent sans erreur claire. Dans beaucoup de pays, l'expéditeur doit être enregistré à l'avance auprès de l'opérateur, sinon il est remplacé par un numéro ou le message est bloqué.
-- **Numéro** : passez-le au format international (`+225…`). Le `+` est retiré et le TON passe à 1, comme l'attendent la plupart des SMSC.
-- **Code court** (`1234`) : envoyé tel quel avec TON 0. Certains opérateurs veulent TON 3 (spécifique au réseau) : `sourceTon: 3`.
-- Le préfixe `+` n'a de sens que pour un numéro. Ne l'ajoutez jamais à un expéditeur alphanumérique.
+- **Alphanumeric** (`MYSERVICE`): at most 11 characters, GSM alphabet. `smpp-ts` rejects anything longer, because networks truncate or reject it without a clear error. In many countries the sender must be registered with the operator in advance, otherwise it is replaced with a number or the message is blocked.
+- **Number**: use the international format (`+225…`). The `+` is removed and TON is set to 1, as most SMSCs expect.
+- **Short code** (`1234`): sent as is with TON 0. Some operators want TON 3 (network specific): `sourceTon: 3`.
+- A `+` only makes sense for a number. Never add one to an alphanumeric sender.
 
-## 4. Accusés de réception
+## 4. Delivery receipts
 
-1. Demandez-les à l'envoi : `registeredDelivery: true`.
-2. Bindez en `transceiver` (ou ouvrez une session `receiver` en plus), sinon le SMSC n'a aucune session où les livrer.
-3. **Enregistrez chaque `messageId`** renvoyé par `sendText` avec votre propre identifiant de message, puis rapprochez les événements `deliveryReport` par `messageId`. Pour un SMS long, `sendText` renvoie un `messageId` par segment.
-4. Avec `trackDeliveries: true` et `reference`, l'événement `messageStatus` donne directement l'issue du message entier.
-5. Si les accusés n'arrivent jamais à rapprocher, comparez `dlr.rawMessageId` et `result.messageIds` : un écart hexadécimal/décimal se corrige avec `messageIdFormat`.
-6. Les accusés arrivent parfois des heures plus tard (téléphone éteint). Persistez l'état côté application. Le suivi intégré est en mémoire et se perd au redémarrage.
+1. Request them when sending: `registeredDelivery: true`.
+2. Bind as `transceiver` (or open an extra `receiver` session), otherwise the SMSC has no session to deliver them to.
+3. **Store every `messageId`** returned by `sendText` with your own message identifier, then match `deliveryReport` events by `messageId`. For a long SMS, `sendText` returns one `messageId` per segment.
+4. With `trackDeliveries: true` and `reference`, the `messageStatus` event gives the outcome of the whole message directly.
+5. If receipts never match, compare `dlr.rawMessageId` with `result.messageIds`: a hexadecimal/decimal mismatch is fixed with `messageIdFormat`.
+6. Receipts sometimes arrive hours later (phone switched off). Persist state on the application side: built-in tracking lives in memory and is lost on restart.
 
-`smpp-ts` répond automatiquement `deliver_sm_resp` à chaque accusé et message entrant. Avec `autoAck: false`, répondez vous-même avec `client.respond(pdu)`, sinon le SMSC renverra les mêmes accusés en boucle.
+`smpp-ts` automatically answers `deliver_sm_resp` to every incoming receipt and message. With `autoAck: false`, answer yourself with `client.respond(pdu)`, otherwise the SMSC will keep resending the same receipts.
 
-## 5. Erreurs et renvois
+## 5. Errors and resending
 
-| Erreur | Signification | Action |
+| Error | Meaning | Action |
 |---|---|---|
-| `SmppValidationError` | Rien n'est parti (adresse, texte, paramètre invalide) | Corriger la donnée, ne pas réessayer tel quel |
-| `SmppStatusError`, `category: 'temporary'` | Déjà réessayé `retry.maxRetries` fois | Remettre en file plus tard |
-| `SmppStatusError`, `category: 'permanent'` | Refus définitif (`ESME_RINVDSTADR`…) | Marquer en échec |
-| `SmppConnectionClosedError`, `written: false` | Jamais écrit sur le socket | Renvoyer sans risque |
-| `SmppConnectionClosedError` ou `SmppTimeoutError`, `written: true` | Le SMSC l'a peut-être accepté | Attendre l'accusé, ou vérifier avec `query()`, avant de renvoyer |
-| `SmppQueueFullError` | La file locale est pleine (SMSC lent ou coupé) | Ralentir l'application |
-| `SmppMultipartError` | Une partie des segments seulement est partie | `results` donne le détail par segment |
+| `SmppValidationError` | Nothing was sent (invalid address, text or parameter) | Fix the data, do not retry as is |
+| `SmppStatusError`, `category: 'temporary'` | Already retried `retry.maxRetries` times | Requeue for later |
+| `SmppStatusError`, `category: 'permanent'` | Final refusal (`ESME_RINVDSTADR`…) | Mark as failed |
+| `SmppConnectionClosedError`, `written: false` | Never written to the socket | Safe to resend |
+| `SmppConnectionClosedError` or `SmppTimeoutError`, `written: true` | The SMSC may have accepted it | Wait for the receipt, or check with `query()`, before resending |
+| `SmppQueueFullError` | The local queue is full (slow or unreachable SMSC) | Slow the application down |
+| `SmppMultipartError` | Only some segments were sent | `results` gives the detail per segment |
 
-La lib ne renvoie jamais d'elle-même un message qui a pu être accepté, pour éviter les doublons facturés.
+The library never resends on its own a message that may have been accepted, to avoid billed duplicates.
 
-## 6. Arrêt propre
+## 6. Clean shutdown
 
 ```ts
 process.on('SIGTERM', async () => {
@@ -90,22 +90,22 @@ process.on('SIGTERM', async () => {
 });
 ```
 
-`drain` attend la fin des envois en cours, envoie `unbind` puis ferme. Un arrêt brutal laisse des messages dans l'état « peut-être accepté ».
+`drain` waits for pending sends, sends `unbind`, then closes. A hard stop leaves messages in the "may have been accepted" state.
 
-## 7. Surveillance
+## 7. Monitoring
 
-À suivre au minimum, via `client.on('metric')` ou `smpp-ts/otel` :
+At a minimum, watch through `client.on('metric')` or `smpp-ts/otel`:
 
-- `request.latency` : une hausse annonce souvent un `ESME_RTHROTTLED`.
-- `command_status` par code : un pic de `ESME_RTHROTTLED` veut dire que `rateLimit` est trop haut ; un pic de `ESME_RINVDSTADR` signale un problème de format de numéro.
-- `queue.size` : une file qui grossit veut dire que le SMSC n'absorbe pas le débit.
-- `session.reconnect` : des reconnexions fréquentes viennent souvent d'un `enquireLinkInterval` plus long que le délai d'inactivité du SMSC, ou d'un pare-feu qui coupe les connexions inactives.
-- Événement `messageStatus` : le taux de `DELIVERED` par opérateur est l'indicateur métier.
+- `request.latency`: a rise often precedes `ESME_RTHROTTLED`.
+- `command_status` per code: a spike of `ESME_RTHROTTLED` means `rateLimit` is too high; a spike of `ESME_RINVDSTADR` points to a number format problem.
+- `queue.size`: a growing queue means the SMSC cannot absorb the rate.
+- `session.reconnect`: frequent reconnections often come from an `enquireLinkInterval` longer than the SMSC's idle timeout, or from a firewall that drops idle connections.
+- `messageStatus` event: the `DELIVERED` rate per operator is the business metric.
 
-## 8. Avant d'ouvrir le trafic
+## 8. Before opening the traffic
 
-1. Lancez la suite d'interopérabilité contre le SMSC de test de l'opérateur (cf. [test/interop/README.md](../test/interop/README.md)).
-2. Envoyez à la main, vers un téléphone de test : un SMS GSM7, un SMS avec accents, un SMS avec emoji, un SMS de plus de 160 caractères. Vérifiez que le long message s'affiche **en un seul** message sur le téléphone.
-3. Vérifiez que les accusés arrivent et se rapprochent de leurs `messageId`.
-4. Coupez le réseau quelques minutes pendant un envoi en rafale : la session doit se reconnecter et les messages en file partir après le re-bind.
-5. Relisez les logs : aucun mot de passe, et pas de contenu de SMS si `redactContent` est activé.
+1. Run the interoperability suite against the operator's test SMSC (see [test/interop/README.md](../test/interop/README.md)).
+2. Send by hand, to a test phone: a GSM7 SMS, an SMS with accents, an SMS with an emoji, an SMS longer than 160 characters. Check that the long one shows up as **a single** message on the phone.
+3. Check that receipts arrive and match their `messageId`.
+4. Cut the network for a few minutes during a burst: the session must reconnect, and queued messages must go out after the re-bind.
+5. Read the logs: no password, and no SMS content if `redactContent` is on.

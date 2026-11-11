@@ -4,15 +4,15 @@
 [![CI](https://github.com/AristideDongo/smpp-ts/actions/workflows/ci.yml/badge.svg)](https://github.com/AristideDongo/smpp-ts/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Client et serveur **SMPP v3.4 / v5.0** en TypeScript : sûr par défaut, fiable en production, sans aucune dépendance runtime.
+**SMPP v3.4 / v5.0** client and server in TypeScript: secure by default, production-ready, zero runtime dependencies.
 
-- **Sûr par défaut** : TLS vérifié (TLS 1.2 minimum), mots de passe jamais journalisés, chaque champ est validé avant l'envoi et à la réception.
-- **Aucun message perdu en silence** : chaque requête aboutit à une réponse, une erreur typée ou un timeout. Jamais d'attente infinie.
-- **Le parseur ne plante jamais** : testé par fuzzing sur 1 million d'entrées aléatoires ou corrompues.
-- **Fonctions intégrées** : reconnexion avec re-bind, fenêtre d'envoi, contrôle de débit, découpage des SMS longs, réassemblage, accusés de réception, Proxy Protocol.
-- **Fidèle à la spécification** : les champs des PDU portent leur nom SMPP (`destination_addr`, `data_coding`…) et sont typés commande par commande.
+- **Secure by default**: verified TLS (TLS 1.2 minimum), passwords never logged, every field validated before sending and on receipt.
+- **No message lost silently**: every request ends with a response, a typed error or a timeout. Never an endless wait.
+- **The parser never crashes**: fuzz-tested on 1 million random or corrupted inputs.
+- **Built in**: reconnection with re-bind, send window, rate limiting, long SMS splitting, reassembly, delivery receipts, Proxy Protocol.
+- **Faithful to the spec**: PDU fields keep their SMPP names (`destination_addr`, `data_coding`…) and are typed per command.
 
-Node ≥ 20, Bun et Deno · ESM + CJS · déclarations `.d.ts` incluses.
+Node ≥ 20, Bun and Deno · ESM + CJS · `.d.ts` declarations included.
 
 ```sh
 npm install smpp-ts
@@ -36,117 +36,117 @@ await client.connect();
 
 const result = await client.sendText({
   to: '+2250700000000',
-  from: 'MISSOU',
-  text: 'Votre code est 123456 🎉',
+  from: 'From',
+  text: 'Your code is 123456 🎉',
   registeredDelivery: true,
 });
 // { messageIds: ['...'], parts: 1, encoding: 'UCS2' }
 
 client.on('deliveryReport', (dlr) => console.log(dlr.messageId, dlr.status));
-client.on('message', (msg) => console.log(`MO de ${msg.from} : ${msg.text}`));
+client.on('message', (msg) => console.log(`MO from ${msg.from}: ${msg.text}`));
 
 await client.close({ drain: true });
 ```
 
-### Envoi
+### Sending
 
-| Méthode | Rôle |
+| Method | Purpose |
 |---|---|
-| `sendText({ to, from, text, … })` | Choisit l'encodage, découpe le texte et renvoie tous les `message_id` |
-| `submit(params)` | `submit_sm` bas niveau |
+| `sendText({ to, from, text, … })` | Picks the encoding, splits the text and returns every `message_id` |
+| `submit(params)` | Low-level `submit_sm` |
 | `query(id)`, `cancel(id)`, `replace(id, params)` | `query_sm`, `cancel_sm`, `replace_sm` |
-| `request(command, params)` | N'importe quelle commande SMPP |
-| `raw.submit_multi(params)`, `raw.data_sm(params)`… | Raccourcis typés par commande |
+| `request(command, params)` | Any SMPP command |
+| `raw.submit_multi(params)`, `raw.data_sm(params)`… | Typed per-command shortcuts |
 
-`sendText` normalise chaque adresse et en déduit le TON/NPI :
+`sendText` normalizes each address and derives its TON/NPI:
 
-| Adresse | Envoyée | TON | NPI |
+| Address | Sent as | TON | NPI |
 |---|---|---|---|
-| alphanumérique (`MISSOU`) | `MISSOU` | 5 (alphanumérique) | 0 |
+| alphanumeric (`From`) | `From` | 5 (alphanumeric) | 0 |
 | `+225 07 00 00 00 00` | `2250700000000` | 1 (international) | 1 (E.164) |
 | `00225 07-00-00-00-00` | `2250700000000` | 1 (international) | 1 (E.164) |
-| `07 00 00 00 00` | `0700000000` | 0 (inconnu) | 1 |
-| vide (expéditeur seulement) | `''` | 0 | 0 |
+| `07 00 00 00 00` | `0700000000` | 0 (unknown) | 1 |
+| empty (sender only) | `''` | 0 | 0 |
 
-Les options `sourceTon`, `sourceNpi`, `destTon` et `destNpi` remplacent ces valeurs.
+The `sourceTon`, `sourceNpi`, `destTon` and `destNpi` options override these values.
 
-Une adresse qu'aucun réseau n'accepterait est refusée **avant l'envoi** avec une `SmppValidationError` : destination non numérique, numéro international de plus de 15 chiffres, expéditeur alphanumérique de plus de 11 caractères ou contenant des caractères hors GSM 7 bits. Au-delà de 11 caractères, les réseaux tronquent ou rejettent l'expéditeur, souvent sans erreur visible. Pour un opérateur aux règles différentes :
+An address no network would accept is rejected **before sending** with a `SmppValidationError`: non-numeric destination, international number longer than 15 digits, alphanumeric sender longer than 11 characters or with characters outside the GSM 7-bit alphabet. Beyond 11 characters, networks truncate or reject the sender, often without any visible error. For an operator with different rules:
 
 ```ts
 new SmppClient({
   …,
   address: {
-    internationalPrefix: '011',   // défaut '00' ; false pour désactiver
-    maxAlphanumericLength: 15,    // défaut 11
-    validateSender: false,        // ne plus valider l'expéditeur alphanumérique
-    normalize: false,             // envoyer les adresses telles quelles
+    internationalPrefix: '011',   // default '00'; false to disable
+    maxAlphanumericLength: 15,    // default 11
+    validateSender: false,        // stop validating the alphanumeric sender
+    normalize: false,             // send addresses exactly as given
   },
 });
 ```
 
-### Suivi des accusés
+### Delivery tracking
 
-Un SMS long est envoyé en plusieurs segments, et chaque segment reçoit son propre accusé. Avec `trackDeliveries`, la lib les regroupe et émet une seule issue par message :
+A long SMS is sent as several segments, and each segment gets its own receipt. With `trackDeliveries`, the library groups them and emits a single outcome per message:
 
 ```ts
 const client = new SmppClient({ …, trackDeliveries: true });
 
 client.on('messageStatus', (s) => {
-  // s.outcome : 'DELIVERED' | 'FAILED' | 'PARTIALLY_DELIVERED' | 'TIMEOUT'
+  // s.outcome: 'DELIVERED' | 'FAILED' | 'PARTIALLY_DELIVERED' | 'TIMEOUT'
   db.updateSms(s.reference, s.outcome, s.reports);
 });
 
 await client.sendText({ to, from, text, registeredDelivery: true, reference: 'sms-8812' });
 ```
 
-- Seuls les envois avec `registeredDelivery: true` (accusé final demandé) sont suivis.
-- `TIMEOUT` : tous les accusés finaux ne sont pas arrivés dans `ttl` (24 h par défaut).
-- Mémoire bornée : `trackDeliveries: { ttl, maxTracked }` (100 000 messages par défaut). Un accusé arrivé avant le `submit_sm_resp` est conservé 60 s.
-- Le suivi est en mémoire. Après un redémarrage, rapprochez les accusés (`deliveryReport`) de vos propres enregistrements par `messageId`.
-- `DeliveryTracker` est exporté pour l'utiliser seul, par exemple avec plusieurs clients.
+- Only sends with `registeredDelivery: true` (final receipt requested) are tracked.
+- `TIMEOUT`: not every final receipt arrived within `ttl` (24 h by default).
+- Bounded memory: `trackDeliveries: { ttl, maxTracked }` (100,000 messages by default). A receipt that arrives before its `submit_sm_resp` is kept for 60 s.
+- Tracking is in memory. After a restart, match receipts (`deliveryReport`) against your own records by `messageId`.
+- `DeliveryTracker` is exported for standalone use, for example across several clients.
 
-### Erreurs
+### Errors
 
-Toutes les erreurs héritent de `SmppError` et portent un `code` stable :
+Every error extends `SmppError` and carries a stable `code`:
 
-| Classe | Cas |
+| Class | When |
 |---|---|
-| `SmppStatusError` | Réponse avec `command_status ≠ 0` : `status`, `statusName`, `category` (`temporary`, `permanent`, `session`) |
-| `SmppTimeoutError` | Délai dépassé (requête, bind, keepalive…) : `kind`, `written` |
-| `SmppConnectionClosedError` | Connexion fermée avec une requête en attente : `written` |
-| `SmppQueueFullError` | File d'envoi pleine |
-| `SmppStateError` | Opération interdite dans l'état ou le mode de bind courant |
-| `SmppValidationError` | Paramètre invalide : aucun PDU n'a été envoyé |
-| `SmppDecodeError` | PDU reçu invalide |
-| `SmppMultipartError` | Échec partiel d'un envoi en plusieurs segments : `results` |
+| `SmppStatusError` | Response with `command_status ≠ 0`: `status`, `statusName`, `category` (`temporary`, `permanent`, `session`) |
+| `SmppTimeoutError` | Timeout (request, bind, keepalive…): `kind`, `written` |
+| `SmppConnectionClosedError` | Connection closed with a pending request: `written` |
+| `SmppQueueFullError` | Send queue full |
+| `SmppStateError` | Operation not allowed in the current state or bind mode |
+| `SmppValidationError` | Invalid parameter: no PDU was sent |
+| `SmppDecodeError` | Invalid PDU received |
+| `SmppMultipartError` | Partial failure of a multi-segment send: `results` |
 
-`written` indique si le PDU a été écrit sur le socket. Avec `written: false`, le message n'est jamais parti et on peut le renvoyer sans risque. Avec `written: true`, le SMSC l'a peut-être accepté, et un renvoi peut créer un doublon. La lib ne renvoie jamais d'elle-même un message qui a pu être accepté : c'est l'application qui décide.
+`written` tells whether the PDU was written to the socket. With `written: false`, the message never left and can be resent safely. With `written: true`, the SMSC may have accepted it, and resending may create a duplicate. The library never resends on its own a message that may have been accepted: the application decides.
 
-Un événement `error` sans écouteur ne termine pas le processus : il est transmis au logger.
+An `error` event without a listener does not end the process: it goes to the logger.
 
-### Fiabilité
+### Reliability
 
-| Option | Défaut | Effet |
+| Option | Default | Effect |
 |---|---|---|
-| `connectTimeout` | 10 s | Rejet de `connect()` |
-| `bindTimeout` | 10 s | Rejet du bind |
-| `requestTimeout` | 10 s | Rejet de la requête (temps en file compris) |
-| `enquireLinkInterval` | 30 s | Envoi d'un `enquire_link` après cette durée sans trafic |
-| `enquireLinkTimeout` | 10 s | Pas de réponse : la session est déclarée morte, puis reconnexion |
-| `unbindTimeout` | 5 s | Fermeture forcée du socket |
-| `window` | 10 | Requêtes en vol simultanées |
-| `maxQueueSize` | 10 000 | Au-delà : `SmppQueueFullError` |
-| `reconnect` | activée | Backoff exponentiel avec gigue, tentatives illimitées |
-| `retry` | 2 nouvelles tentatives | Uniquement sur statut temporaire (`ESME_RTHROTTLED`, `ESME_RMSGQFUL`, `ESME_RSYSERR`) |
-| `rateLimit` | aucun | Seau à jetons ; le débit baisse automatiquement sur `ESME_RTHROTTLED` / `ESME_RMSGQFUL` |
+| `connectTimeout` | 10 s | Rejects `connect()` |
+| `bindTimeout` | 10 s | Rejects the bind |
+| `requestTimeout` | 10 s | Rejects the request (queue time included) |
+| `enquireLinkInterval` | 30 s | Sends an `enquire_link` after this long without traffic |
+| `enquireLinkTimeout` | 10 s | No answer: the session is declared dead, then reconnects |
+| `unbindTimeout` | 5 s | Forces the socket closed |
+| `window` | 10 | Concurrent in-flight requests |
+| `maxQueueSize` | 10,000 | Beyond this: `SmppQueueFullError` |
+| `reconnect` | on | Exponential backoff with jitter, unlimited attempts |
+| `retry` | 2 retries | Only on temporary statuses (`ESME_RTHROTTLED`, `ESME_RMSGQFUL`, `ESME_RSYSERR`) |
+| `rateLimit` | none | Token bucket; the rate drops automatically on `ESME_RTHROTTLED` / `ESME_RMSGQFUL` |
 
-Pendant une reconnexion, les messages qui n'ont pas encore été écrits restent en file et partent après le re-bind. Les messages en vol au moment de la coupure sont rejetés avec `SmppConnectionClosedError` (`written: true`).
+During a reconnection, messages not yet written stay queued and go out after the re-bind. Messages in flight when the connection dropped are rejected with `SmppConnectionClosedError` (`written: true`).
 
-`close({ drain: true })` refuse les nouveaux envois, attend la fin des requêtes en cours, envoie `unbind`, puis ferme la connexion.
+`close({ drain: true })` refuses new sends, waits for pending requests to finish, sends `unbind`, then closes the connection.
 
 ### TLS
 
-La vérification du certificat est **activée par défaut**. Si le SMSC utilise un certificat auto-signé, fournissez son autorité de certification plutôt que de désactiver la vérification :
+Certificate verification is **on by default**. If the SMSC uses a self-signed certificate, provide its certificate authority instead of disabling verification:
 
 ```ts
 new SmppClient({
@@ -156,20 +156,20 @@ new SmppClient({
 });
 ```
 
-`rejectUnauthorized: false` reste possible, mais chaque connexion produit alors un avertissement dans les logs.
+`rejectUnauthorized: false` is still possible, but every connection then logs a warning.
 
-### Messages longs
+### Long messages
 
-| `multipart.strategy` | Mécanisme |
+| `multipart.strategy` | Mechanism |
 |---|---|
-| `udh8` (défaut) | UDH de concaténation 8 bits (IEI 0x00) |
-| `udh16` | UDH de concaténation 16 bits (IEI 0x08) |
-| `sar` | TLV `sar_msg_ref_num`, `sar_total_segments`, `sar_segment_seqnum` |
-| `payload` | Un seul PDU avec `message_payload` |
+| `udh8` (default) | 8-bit concatenation UDH (IEI 0x00) |
+| `udh16` | 16-bit concatenation UDH (IEI 0x08) |
+| `sar` | `sar_msg_ref_num`, `sar_total_segments`, `sar_segment_seqnum` TLVs |
+| `payload` | A single PDU with `message_payload` |
 
-Le découpage ne coupe jamais une séquence d'échappement GSM ni un emoji (paire de substitution UTF-16). À la réception, les segments sont réassemblés par (source, destination, référence), avec une durée de vie (`reassembly.ttl`, 5 min) et un nombre maximal de messages incomplets en mémoire (`reassembly.maxBuffers`, 1 000). À l'expiration, l'événement `partialMessage` livre ce qui a été reçu.
+Splitting never breaks a GSM escape sequence or an emoji (UTF-16 surrogate pair). On receipt, segments are reassembled by (source, destination, reference), with a lifetime (`reassembly.ttl`, 5 min) and a maximum number of incomplete messages in memory (`reassembly.maxBuffers`, 1,000). On expiry, the `partialMessage` event delivers whatever was received.
 
-## Serveur
+## Server
 
 ```ts
 import { SmppServer, safeCompare, COMMAND_STATUS } from 'smpp-ts';
@@ -182,55 +182,55 @@ const server = new SmppServer({
   handlers: {
     submit_sm: async (pdu, session) => {
       const id = await queue.push(pdu);
-      return { message_id: id };          // ou un code : return COMMAND_STATUS.ESME_RINVDSTADR
+      return { message_id: id };          // or a status: return COMMAND_STATUS.ESME_RINVDSTADR
     },
   },
-  tls: { key, cert },                     // optionnel
+  tls: { key, cert },                     // optional
 });
 
 await server.listen(2775);
 await server.deliver('system_id', { source_addr: '…', destination_addr: '…', short_message: Buffer.from('…') });
 ```
 
-- `authenticate` est obligatoire. Un refus renvoie toujours `ESME_RBINDFAIL`, que le compte existe ou non, ce qui empêche d'énumérer les comptes.
-- Tant qu'une session n'est pas bindée, elle ne traite que `bind_*`, `enquire_link`, `unbind` et `generic_nack`. Toute autre commande reçoit `ESME_RINVBNDSTS`.
-- Une session `transmitter` ne reçoit pas de `deliver_sm`, et une session `receiver` ne peut pas envoyer de `submit_sm`.
-- Si un handler échoue ou ne répond pas dans `handlerTimeout` (10 s), le serveur répond `ESME_RSYSERR`.
-- Limites intégrées : `bindTimeout` (30 s), `idleTimeout` (5 min), `maxSessions`, `maxSessionsPerIp`, `maxSessionsPerSystemId`, et bannissement temporaire d'une IP après des binds échoués répétés (`bindFailures`).
-- Proxy Protocol v1 et v2, désactivé par défaut : `proxyProtocol: { trustedProxies: ['10.0.0.0/8'] }`. Un en-tête PROXY qui vient d'une adresse non listée est rejeté.
+- `authenticate` is required. A refusal always returns `ESME_RBINDFAIL`, whether the account exists or not, so accounts cannot be enumerated.
+- Until a session is bound, it only handles `bind_*`, `enquire_link`, `unbind` and `generic_nack`. Any other command gets `ESME_RINVBNDSTS`.
+- A `transmitter` session does not receive `deliver_sm`, and a `receiver` session cannot send `submit_sm`.
+- If a handler fails or does not answer within `handlerTimeout` (10 s), the server answers `ESME_RSYSERR`.
+- Built-in limits: `bindTimeout` (30 s), `idleTimeout` (5 min), `maxSessions`, `maxSessionsPerIp`, `maxSessionsPerSystemId`, and a temporary IP ban after repeated failed binds (`bindFailures`).
+- Proxy Protocol v1 and v2, off by default: `proxyProtocol: { trustedProxies: ['10.0.0.0/8'] }`. A PROXY header from an unlisted address is rejected.
 
-## Utilitaires
+## Utilities
 
 ```ts
 import { countSegments, detectEncoding, parseDlr, formatRelativeTime, parseSmppTime } from 'smpp-ts';
 
-countSegments('Bonjour {monde} €');
-// { encoding: 'gsm7', segments: 1, units: 20, perSegment: 160, remaining: 140, … }
+countSegments('Hello {world} €');
+// { encoding: 'gsm7', segments: 1, units: 18, perSegment: 160, remaining: 142, … }
 
 detectEncoding('Şişli', { shiftTables: ['tr'] });   // { encoding: 'gsm7', shift: 'tr' }
 parseDlr('id:123 sub:001 dlvrd:001 … stat:DELIVRD err:000 text:…');
 formatRelativeTime(2 * 3600_000);                    // '000000020000000R'
 ```
 
-| Encodage | `data_coding` | Seul | Avec UDH 8 bits |
+| Encoding | `data_coding` | Single | With 8-bit UDH |
 |---|---|---|---|
-| GSM7 | 0x00 | 160 caractères | 153 caractères |
-| Latin-1 | 0x03 | 140 caractères | 134 caractères |
-| UCS2 | 0x08 | 70 unités | 67 unités |
+| GSM7 | 0x00 | 160 characters | 153 characters |
+| Latin-1 | 0x03 | 140 characters | 134 characters |
+| UCS2 | 0x08 | 70 units | 67 units |
 
-Les caractères de la table d'extension GSM (`€ [ ] { } \ ^ ~ |`) comptent pour 2. La détection automatique utilise Latin-1 et les tables de shift nationales (turque, espagnole, portugaise) seulement si vous les autorisez, car beaucoup d'opérateurs ne les prennent pas en charge. Avec un encodage forcé, un texte non représentable lève une erreur au lieu d'être remplacé en silence par `?`. Le registre `encodings` accepte des encodages propres à un opérateur.
+Characters from the GSM extension table (`€ [ ] { } \ ^ ~ |`) count as 2. Automatic detection only uses Latin-1 and the national shift tables (Turkish, Spanish, Portuguese) if you allow them, because many operators do not support them. With a forced encoding, unrepresentable text throws instead of being silently replaced with `?`. The `encodings` registry accepts operator-specific encodings.
 
-## Logs et métriques
+## Logs and metrics
 
 ```ts
-new SmppClient({ …, logger: console });        // ou pinoAdapter(pino())
+new SmppClient({ …, logger: console });        // or pinoAdapter(pino())
 new SmppClient({ …, redactContent: true, redactNumbers: true });
 client.on('metric', (m) => prometheus.observe(m));
 ```
 
-- Le logger est silencieux par défaut. Les mots de passe sont toujours masqués, et le contenu des SMS et les numéros le sont sur option.
-- Chaque ligne de log porte `sessionId`, `systemId`, `remoteAddress`, `command` et `sequence_number`.
-- Métriques émises : `pdu.sent`, `pdu.received`, `request.latency`, `request.timeout`, `request.inflight`, `queue.size`, `session.reconnect`, `command_status`, `bytes.in` et `bytes.out`.
+- The logger is silent by default. Passwords are always masked; SMS content and numbers are masked on request.
+- Every log line carries `sessionId`, `systemId`, `remoteAddress`, `command` and `sequence_number`.
+- Emitted metrics: `pdu.sent`, `pdu.received`, `request.latency`, `request.timeout`, `request.inflight`, `queue.size`, `session.reconnect`, `command_status`, `bytes.in` and `bytes.out`.
 
 ### OpenTelemetry
 
@@ -241,41 +241,41 @@ import { instrumentSmpp } from 'smpp-ts/otel';
 const detach = instrumentSmpp(client, metrics.getMeter('sms-gateway'), {
   attributes: { 'smpp.operator': 'orange-ci' },
 });
-instrumentSmpp(server, metrics.getMeter('smsc')); // ajoute smpp.system_id à chaque mesure
+instrumentSmpp(server, metrics.getMeter('smsc')); // adds smpp.system_id to every measurement
 ```
 
-`smpp-ts/otel` n'importe pas `@opentelemetry/api` : il reçoit le `Meter` de votre application. Le paquet reste sans dépendance. Les instruments s'appellent `smpp.<métrique>` (`smpp.request.latency` en ms, `smpp.bytes.out` en octets…).
+`smpp-ts/otel` does not import `@opentelemetry/api`: it receives your application's `Meter`, so the package stays dependency-free. Instruments are named `smpp.<metric>` (`smpp.request.latency` in ms, `smpp.bytes.out` in bytes…).
 
-## Bas niveau
+## Low level
 
 ```ts
 import { encodePdu, decodePdu, PduCodec, Framer } from 'smpp-ts';
 
 const buf = encodePdu({ command: 'submit_sm', destination_addr: '225…', short_message: Buffer.from('Hi') });
 const pdu = decodePdu(buf);
-if (pdu.command === 'submit_sm') pdu.short_message; // typé
+if (pdu.command === 'submit_sm') pdu.short_message; // typed
 
-// TLV propres à un opérateur
+// Operator-specific TLVs
 const codec = new PduCodec({ customTlvs: [{ name: 'operator_ref', tag: 0x1501, type: 'cstring', max: 32 }] });
 ```
 
-## Mise en production
+## Going to production
 
-Avant de brancher un opérateur, lisez le [guide de mise en production](docs/PRODUCTION.md) : les questions à lui poser, les réglages qui en découlent et les tests à lancer contre son SMSC de test.
+Before connecting to an operator, read the [production guide](docs/PRODUCTION.md): what to ask them, the settings that follow from it and the tests to run against their test SMSC.
 
-## Développement
+## Development
 
 ```sh
-npm test               # unitaires, propriétés, fuzzing (20 000 itérations), intégration
-npm run fuzz           # fuzzing du parseur, 1 000 000 d'itérations
+npm test               # unit, property, fuzzing (20,000 iterations), integration
+npm run fuzz           # parser fuzzing, 1,000,000 iterations
 npm run coverage
-npm run test:runtime   # test de fumée sur le paquet compilé (aussi : bun / deno run -A test/runtime/smoke.mjs)
-npm run test:interop   # contre un SMSC tiers, cf. test/interop/README.md
+npm run test:runtime   # smoke test on the built package (also: bun / deno run -A test/runtime/smoke.mjs)
+npm run test:interop   # against a third-party SMSC, see test/interop/README.md
 npm run typecheck && npm run lint && npm run build
 ```
 
-Voir [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) et [MIGRATION.md](MIGRATION.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) and [MIGRATION.md](MIGRATION.md).
 
-## Licence
+## License
 
 MIT

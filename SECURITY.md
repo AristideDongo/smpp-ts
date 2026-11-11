@@ -1,29 +1,29 @@
-# Politique de sécurité
+# Security policy
 
-## Versions prises en charge
+## Supported versions
 
-Seule la dernière version mineure publiée reçoit les correctifs de sécurité.
+Only the latest published minor version receives security fixes.
 
-## Signaler un problème
+## Reporting an issue
 
-Vous avez trouvé un bug ou une faille ? Ouvrez une [issue](https://github.com/AristideDongo/smpp-ts/issues) ou proposez directement un correctif en [pull request](https://github.com/AristideDongo/smpp-ts/pulls).
+Found a bug or a vulnerability? Open an [issue](https://github.com/AristideDongo/smpp-ts/issues) or send a fix directly as a [pull request](https://github.com/AristideDongo/smpp-ts/pulls).
 
-Pour qu'on puisse le traiter rapidement, indiquez :
+To help us handle it quickly, include:
 
-- la version concernée (`npm ls smpp-ts`) et la version de Node ;
-- une description du problème et de son impact ;
-- un moyen de le reproduire : PDU en hexadécimal, script minimal… ;
-- si possible, une piste de correction.
+- the affected version (`npm ls smpp-ts`) and your Node version;
+- a description of the problem and its impact;
+- a way to reproduce it: PDU in hexadecimal, minimal script…;
+- if possible, a suggested fix.
 
-**Ne publiez jamais d'identifiants réels** (system_id, mot de passe, adresse d'un SMSC de production) ni de numéros de téléphone de vrais abonnés dans une issue ou une PR. Masquez-les avant de partager des logs ou des captures de PDU.
+**Never post real credentials** (system_id, password, production SMSC address) or real subscribers' phone numbers in an issue or a PR. Mask them before sharing logs or PDU captures.
 
-Le crédit de la découverte vous revient dans le CHANGELOG, sauf si vous préférez rester anonyme.
+You will be credited for the finding in the CHANGELOG, unless you prefer to stay anonymous.
 
-## Garanties de conception
+## Design guarantees
 
-- Vérification TLS activée par défaut, TLS 1.2 minimum.
-- Mots de passe jamais journalisés, ni dans les logs, ni dans les événements, ni dans les messages d'erreur.
-- Chaque champ est validé contre la spécification, à l'envoi comme à la réception.
-- Le parseur, testé par fuzzing, ne lève que des erreurs typées.
-- Ressources bornées : taille des PDU, fenêtre d'envoi, file, buffers de réassemblage, sessions.
-- Aucune dépendance runtime.
+- TLS verification on by default, TLS 1.2 minimum.
+- Passwords are never logged: not in logs, events or error messages.
+- Every field is validated against the specification, both when sending and when receiving.
+- The parser is fuzz-tested and only throws typed errors.
+- Bounded resources: PDU size, send window, queue, reassembly buffers, sessions.
+- No runtime dependencies.

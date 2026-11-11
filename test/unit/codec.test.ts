@@ -111,7 +111,7 @@ describe('codec: encode / decode', () => {
     const buf = codec.encode({ command: 'submit_sm', custom_tlvs: { operator_ref: 'XYZ' } });
     const pdu = codec.decode(buf);
     expect(pdu.custom_tlvs).toEqual({ operator_ref: 'XYZ' });
-    // Avec le codec par défaut, le TLV est inconnu mais conservé.
+    // With the default codec, the TLV is unknown but kept.
     expect(decodePdu(buf).unknown_tlvs?.[0]?.tag).toBe(0x1501);
   });
 
@@ -260,7 +260,7 @@ describe('codec: TLV edge cases', () => {
   };
 
   it('strict mode rejects integer TLVs of the wrong size, lenient mode reads them', () => {
-    // message_state (uint8) transmis sur 2 octets
+    // message_state (uint8) sent on 2 bytes
     const buf = withTlv(Buffer.from([0x04, 0x27, 0x00, 0x02, 0x00, 0x02]));
     expect(() => decodePdu(buf)).toThrow(/expected 1 octets/);
     expect(new PduCodec({ strict: false }).decode(buf)).toMatchObject({ message_state: 2 });
