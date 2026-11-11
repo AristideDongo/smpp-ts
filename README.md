@@ -3,6 +3,9 @@
 [![npm](https://img.shields.io/npm/v/smpp-ts.svg)](https://www.npmjs.com/package/smpp-ts)
 [![CI](https://github.com/AristideDongo/smpp-ts/actions/workflows/ci.yml/badge.svg)](https://github.com/AristideDongo/smpp-ts/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Coverage](https://img.shields.io/endpoint?url=https://aristidedongo.github.io/smpp-ts/coverage-badge.json)](https://aristidedongo.github.io/smpp-ts/)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/AristideDongo/smpp-ts/badge)](https://scorecard.dev/viewer/?uri=github.com/AristideDongo/smpp-ts)
+[![Zero dependencies](https://img.shields.io/badge/runtime%20dependencies-0-brightgreen)](package.json)
 
 **SMPP v3.4 / v5.0** client and server in TypeScript: secure by default, production-ready, zero runtime dependencies.
 
@@ -326,6 +329,7 @@ API reference and guides: **https://aristidedongo.github.io/smpp-ts/**
 - [Delivery receipts](docs/guides/delivery-reports.md)
 - [Building an SMPP server](docs/guides/building-a-server.md)
 - [Going to production](docs/PRODUCTION.md)
+- [Comparison with other SMPP libraries](docs/guides/comparison.md)
 
 ## Going to production
 
