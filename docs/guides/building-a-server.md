@@ -16,9 +16,10 @@ const server = new SmppServer({
     return { accountId: account.id };   // available as session.context
   },
   handlers: {
-    submit_sm: async (pdu, session) => {
+    submit_sm: async (pdu, session, { signal }) => {
       if (!isValidNumber(pdu.destination_addr)) return COMMAND_STATUS.ESME_RINVDSTADR;
-      const id = await queue.push({ account: session.context!.accountId, pdu });
+      // signal: aborted if the answer was already sent (timeout) or the session closed
+      const id = await queue.push({ account: session.context!.accountId, pdu }, { signal });
       return { message_id: id };
     },
   },
@@ -29,15 +30,19 @@ await server.listen(3550);
 
 ## Authentication
 
-- `authenticate` is required. Every refusal answers `ESME_RBINDFAIL`, whether the account exists or not.
+- `authenticate` is required. It binds the session **only** when it returns `true` or an object (which becomes `session.context`). Anything else, including `0`, `''` or `NaN` (for example a database column `enabled = 0` short-circuiting `row && row.enabled && …`), is a refusal: `ESME_RBINDFAIL`, whether the account exists or not.
+- An exception, or no answer within `handlerTimeout`, answers `ESME_RSYSERR`: the backend is down, not the password wrong, so the client retries. `ctx.signal` is aborted on timeout.
 - `safeCompare` compares in constant time.
-- Repeated failures ban the IP for a while (`bindFailures`). Brute force on one account from many addresses must be handled in `authenticate()`.
+- Repeated refusals by `authenticate()` ban the IP for a while (`bindFailures`). Session limits (`maxSessionsPerSystemId`), timeouts and exceptions do not count. Brute force on one account from many addresses must be handled in `authenticate()`.
+- The `bindFailed` event carries a `reason`: `credentials`, `limit`, `timeout` or `error`.
 
 ## Handlers
 
 - A handler returns nothing (status 0), a number (`command_status`) or the response fields.
 - An exception with a `status` gives that status; any other exception, or no answer within `handlerTimeout` (10 s), gives `ESME_RSYSERR`.
 - A command without a handler gets `ESME_RINVCMDID`.
+- The third argument is `{ signal }`. It is aborted when `handlerTimeout` expires (the client already received `ESME_RSYSERR`) or when the session closes; `signal.reason` is a `SmppError` with code `SMPP_HANDLER_TIMEOUT` or `SMPP_SESSION_CLOSED`.
+- Work finishing after the timeout is **not** reported to the client, which usually resends on `ESME_RSYSERR`. Make handlers idempotent, or check `signal.aborted` (or pass `signal` on) before committing, to avoid sending the same SMS twice.
 
 ## Sending to customers
 

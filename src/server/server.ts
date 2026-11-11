@@ -28,10 +28,35 @@ export interface AuthContext {
   interface_version: number;
   remoteAddress: string;
   mode: BindMode;
+  /**
+   * Aborted when `handlerTimeout` expires or the connection closes: the bind has then already been
+   * answered, so the result is ignored.
+   */
+  signal: AbortSignal;
 }
 
-/** `true` or a context object: accepted. `false`: refused (ESME_RBINDFAIL, whatever the reason). */
-export type Authenticate<Ctx> = (ctx: AuthContext) => Promise<boolean | Ctx> | boolean | Ctx;
+/**
+ * Accepted only on `true` or a non-null object (which becomes `session.context`).
+ * Any other value (`false`, `null`, `undefined`, `0`, `''`, `NaN`…) is a refusal: ESME_RBINDFAIL,
+ * whether the account exists or not. An exception or a timeout answers ESME_RSYSERR.
+ */
+export type Authenticate<Ctx> = (
+  ctx: AuthContext,
+) => Promise<boolean | (Ctx & object) | null | undefined> | boolean | (Ctx & object) | null | undefined;
+
+/** Why a bind was refused (`bindFailed` event). Only `credentials` counts toward the IP ban. */
+export type BindFailureReason = 'credentials' | 'limit' | 'timeout' | 'error';
+
+/** Third argument of a handler. */
+export interface HandlerContext {
+  /**
+   * Aborted when `handlerTimeout` expires (the peer already received ESME_RSYSERR) or the session
+   * closes. `signal.reason` is a `SmppError` (`SMPP_HANDLER_TIMEOUT` or `SMPP_SESSION_CLOSED`).
+   * Check it before committing work, or pass it on, so a peer retrying on ESME_RSYSERR does not
+   * create duplicates.
+   */
+  signal: AbortSignal;
+}
 
 /** Incoming commands a handler can process. */
 export type HandledCommand = Exclude<
@@ -64,6 +89,7 @@ export type HandlerResult<C extends HandledCommand> =
 export type Handler<C extends HandledCommand, Ctx> = (
   pdu: PduOf<C>,
   session: ServerSession<Ctx>,
+  context: HandlerContext,
 ) => Promise<HandlerResult<C>> | HandlerResult<C>;
 
 export type Handlers<Ctx> = { [C in HandledCommand]?: Handler<C, Ctx> };
@@ -133,7 +159,9 @@ export interface ServerEvents<Ctx> {
   listening: [address: net.AddressInfo];
   session: [session: ServerSession<Ctx>];
   bind: [session: ServerSession<Ctx>];
-  bindFailed: [info: { remoteAddress: string; system_id: string; banned: boolean }];
+  bindFailed: [
+    info: { remoteAddress: string; system_id: string; banned: boolean; reason: BindFailureReason },
+  ];
   sessionClose: [session: ServerSession<Ctx>];
   rejected: [info: { remoteAddress: string; reason: string }];
   error: [error: SmppError];
@@ -415,7 +443,13 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     const handler = this.handlers[command] as Handler<HandledCommand, Ctx> | undefined;
     if (!responseNameOf(pdu.command)) {
       // No response expected: notify the handler, if any.
-      if (handler) await Promise.resolve(handler(pdu as never, ss)).catch(() => {});
+      if (handler) {
+        const ac = this.abortOnClose(ss);
+        await Promise.resolve()
+          .then(() => handler(pdu as never, ss, { signal: ac.signal }))
+          .catch(() => {})
+          .finally(ac.dispose);
+      }
       return;
     }
     const req = pdu as { command: RequestCommandName; sequence_number: number };
@@ -425,14 +459,16 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     }
     const timeoutMs = this.options.handlerTimeout ?? 10_000;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const ac = this.abortOnClose(ss);
     try {
       const result = await Promise.race([
-        Promise.resolve().then(() => handler(pdu as never, ss)),
+        Promise.resolve().then(() => handler(pdu as never, ss, { signal: ac.signal })),
         new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new SmppError('SMPP_HANDLER_TIMEOUT', `${command} handler timed out`)),
-            timeoutMs,
-          );
+          timer = setTimeout(() => {
+            const err = new SmppError('SMPP_HANDLER_TIMEOUT', `${command} handler timed out`);
+            ac.abort(err);
+            reject(err);
+          }, timeoutMs);
         }),
       ]);
       try {
@@ -449,6 +485,7 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
       ss.session.respond(req, { command_status: status });
     } finally {
       if (timer) clearTimeout(timer);
+      ac.dispose();
     }
   }
 
@@ -460,7 +497,8 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     const session = ss.session;
     const ip = ss.remoteAddress;
     session.pause(); // keeps ordering during asynchronous authentication (REL-09)
-    let accepted: boolean | Ctx = false;
+    let accepted: unknown = false;
+    let failure: BindFailureReason | undefined;
     const systemId = pdu.system_id;
     // The slot is reserved before authenticate() resolves: concurrent binds cannot exceed the limit.
     const perSystem = this.options.maxSessionsPerSystemId ?? 10;
@@ -472,10 +510,15 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
       if (n <= 0) this.pendingBinds.delete(systemId);
       else this.pendingBinds.set(systemId, n);
     };
-    try {
-      if (reserved) {
-        const timeoutMs = this.options.handlerTimeout ?? 10_000;
-        let timer: ReturnType<typeof setTimeout> | undefined;
+    if (!reserved) {
+      failure = 'limit';
+      this.logger.warn('maxSessionsPerSystemId reached', { systemId: pdu.system_id, remoteAddress: ip });
+    } else {
+      const timeoutMs = this.options.handlerTimeout ?? 10_000;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const ac = this.abortOnClose(ss);
+      const timedOut = Symbol('timeout');
+      try {
         accepted = await Promise.race([
           Promise.resolve().then(() =>
             this.options.authenticate({
@@ -485,31 +528,57 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
               interface_version: pdu.interface_version,
               remoteAddress: ip,
               mode,
+              signal: ac.signal,
             }),
           ),
-          new Promise<false>((resolve) => {
-            timer = setTimeout(() => resolve(false), timeoutMs);
+          new Promise<typeof timedOut>((resolve) => {
+            timer = setTimeout(() => {
+              ac.abort(new SmppError('SMPP_HANDLER_TIMEOUT', 'authenticate() timed out'));
+              resolve(timedOut);
+            }, timeoutMs);
           }),
-        ]).finally(() => clearTimeout(timer));
-      } else {
-        this.logger.warn('maxSessionsPerSystemId reached', { systemId: pdu.system_id, remoteAddress: ip });
+        ]);
+        if (accepted === timedOut) {
+          failure = 'timeout';
+          this.logger.warn('authenticate() timed out', { systemId: pdu.system_id, remoteAddress: ip });
+        }
+      } catch (err) {
+        failure = 'error';
+        this.logger.warn('authenticate() threw', { error: toError(err).message });
+      } finally {
+        clearTimeout(timer);
+        ac.dispose();
       }
-    } catch (err) {
-      this.logger.warn('authenticate() threw', { error: toError(err).message });
-      accepted = false;
+      // Only `true` or an object binds: 0, '', NaN, 'yes'… are refusals (#23).
+      if (!failure && accepted !== true && (typeof accepted !== 'object' || accepted === null)) {
+        failure = 'credentials';
+      }
     }
 
     if (session.isClosed) {
       releaseSlot();
       return;
     }
-    if (accepted === false || accepted === null || accepted === undefined) {
+    if (failure) {
       releaseSlot();
-      // Same response whether the system_id exists or not (SEC-06).
-      const banned = this.failures.recordFailure(ip);
-      this.logger.warn('bind rejected', { systemId: pdu.system_id, remoteAddress: ip, banned });
-      this.emitSafe('bindFailed', { remoteAddress: ip, system_id: pdu.system_id, banned });
-      session.respond(pdu, { command_status: COMMAND_STATUS.ESME_RBINDFAIL });
+      // Only a refusal by authenticate() counts toward the IP ban: a session limit, a slow or failing
+      // backend says nothing about the credentials, and banning would lock out every account behind
+      // that IP (#24).
+      const banned = failure === 'credentials' ? this.failures.recordFailure(ip) : false;
+      this.logger.warn('bind rejected', {
+        systemId: pdu.system_id,
+        remoteAddress: ip,
+        reason: failure,
+        banned,
+      });
+      this.emitSafe('bindFailed', { remoteAddress: ip, system_id: pdu.system_id, banned, reason: failure });
+      // Same response whether the system_id exists or not (SEC-06). A backend failure is transient:
+      // ESME_RSYSERR, so the ESME retries instead of treating it as a wrong password.
+      const status =
+        failure === 'timeout' || failure === 'error'
+          ? COMMAND_STATUS.ESME_RSYSERR
+          : COMMAND_STATUS.ESME_RBINDFAIL;
+      session.respond(pdu, { command_status: status });
       await session.close();
       return;
     }
@@ -529,6 +598,24 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
   }
 
   // ---------------------------------------------------------------- helpers
+
+  /** AbortController aborted when the session closes; `dispose()` removes the listener. */
+  private abortOnClose(ss: ServerSession<Ctx>): {
+    signal: AbortSignal;
+    abort: (reason: unknown) => void;
+    dispose: () => void;
+  } {
+    const ac = new AbortController();
+    const onClose = () =>
+      ac.abort(new SmppError('SMPP_SESSION_CLOSED', 'session closed before the handler answered'));
+    if (ss.session.isClosed) onClose();
+    else ss.session.once('close', onClose);
+    return {
+      signal: ac.signal,
+      abort: (reason) => ac.abort(reason),
+      dispose: () => ss.session.off('close', onClose),
+    };
+  }
 
   private emitSafe<K extends keyof ServerEvents<Ctx>>(event: K, ...args: ServerEvents<Ctx>[K]): void {
     try {

@@ -20,8 +20,10 @@ export { SmppServer } from './server/server.js';
 export type {
   AuthContext,
   Authenticate,
+  BindFailureReason,
   HandledCommand,
   Handler,
+  HandlerContext,
   HandlerResult,
   Handlers,
   ServerEvents,
