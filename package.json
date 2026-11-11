@@ -1,6 +1,6 @@
 {
   "name": "smpp-ts",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Client et serveur SMPP v3.4/v5.0 en TypeScript : sûr par défaut, fiable en production, zéro dépendance runtime.",
   "license": "MIT",
   "type": "module",
