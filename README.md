@@ -12,7 +12,7 @@ Client et serveur **SMPP v3.4 / v5.0** en TypeScript : sûr par défaut, fiable 
 - **Fonctions intégrées** : reconnexion avec re-bind, fenêtre d'envoi, contrôle de débit, découpage des SMS longs, réassemblage, accusés de réception, Proxy Protocol.
 - **Fidèle à la spécification** : les champs des PDU portent leur nom SMPP (`destination_addr`, `data_coding`…) et sont typés commande par commande.
 
-Node ≥ 20 · ESM + CJS · déclarations `.d.ts` incluses.
+Node ≥ 20, Bun et Deno · ESM + CJS · déclarations `.d.ts` incluses.
 
 ```sh
 npm install smpp-ts
@@ -58,15 +58,52 @@ await client.close({ drain: true });
 | `request(command, params)` | N'importe quelle commande SMPP |
 | `raw.submit_multi(params)`, `raw.data_sm(params)`… | Raccourcis typés par commande |
 
-`sendText` déduit le TON/NPI de chaque adresse :
+`sendText` normalise chaque adresse et en déduit le TON/NPI :
 
-| Adresse | TON | NPI |
-|---|---|---|
-| alphanumérique (`MISSOU`) | 5 (alphanumérique) | 0 |
-| `+2250700000000` (le `+` est retiré) | 1 (international) | 1 (E.164) |
-| `0700000000` | 0 (inconnu) | 1 |
+| Adresse | Envoyée | TON | NPI |
+|---|---|---|---|
+| alphanumérique (`MISSOU`) | `MISSOU` | 5 (alphanumérique) | 0 |
+| `+225 07 00 00 00 00` | `2250700000000` | 1 (international) | 1 (E.164) |
+| `00225 07-00-00-00-00` | `2250700000000` | 1 (international) | 1 (E.164) |
+| `07 00 00 00 00` | `0700000000` | 0 (inconnu) | 1 |
+| vide (expéditeur seulement) | `''` | 0 | 0 |
 
 Les options `sourceTon`, `sourceNpi`, `destTon` et `destNpi` remplacent ces valeurs.
+
+Une adresse qu'aucun réseau n'accepterait est refusée **avant l'envoi** avec une `SmppValidationError` : destination non numérique, numéro international de plus de 15 chiffres, expéditeur alphanumérique de plus de 11 caractères ou contenant des caractères hors GSM 7 bits. Au-delà de 11 caractères, les réseaux tronquent ou rejettent l'expéditeur, souvent sans erreur visible. Pour un opérateur aux règles différentes :
+
+```ts
+new SmppClient({
+  …,
+  address: {
+    internationalPrefix: '011',   // défaut '00' ; false pour désactiver
+    maxAlphanumericLength: 15,    // défaut 11
+    validateSender: false,        // ne plus valider l'expéditeur alphanumérique
+    normalize: false,             // envoyer les adresses telles quelles
+  },
+});
+```
+
+### Suivi des accusés
+
+Un SMS long est envoyé en plusieurs segments, et chaque segment reçoit son propre accusé. Avec `trackDeliveries`, la lib les regroupe et émet une seule issue par message :
+
+```ts
+const client = new SmppClient({ …, trackDeliveries: true });
+
+client.on('messageStatus', (s) => {
+  // s.outcome : 'DELIVERED' | 'FAILED' | 'PARTIALLY_DELIVERED' | 'TIMEOUT'
+  db.updateSms(s.reference, s.outcome, s.reports);
+});
+
+await client.sendText({ to, from, text, registeredDelivery: true, reference: 'sms-8812' });
+```
+
+- Seuls les envois avec `registeredDelivery: true` (accusé final demandé) sont suivis.
+- `TIMEOUT` : tous les accusés finaux ne sont pas arrivés dans `ttl` (24 h par défaut).
+- Mémoire bornée : `trackDeliveries: { ttl, maxTracked }` (100 000 messages par défaut). Un accusé arrivé avant le `submit_sm_resp` est conservé 60 s.
+- Le suivi est en mémoire. Après un redémarrage, rapprochez les accusés (`deliveryReport`) de vos propres enregistrements par `messageId`.
+- `DeliveryTracker` est exporté pour l'utiliser seul, par exemple avec plusieurs clients.
 
 ### Erreurs
 
@@ -195,6 +232,20 @@ client.on('metric', (m) => prometheus.observe(m));
 - Chaque ligne de log porte `sessionId`, `systemId`, `remoteAddress`, `command` et `sequence_number`.
 - Métriques émises : `pdu.sent`, `pdu.received`, `request.latency`, `request.timeout`, `request.inflight`, `queue.size`, `session.reconnect`, `command_status`, `bytes.in` et `bytes.out`.
 
+### OpenTelemetry
+
+```ts
+import { metrics } from '@opentelemetry/api';
+import { instrumentSmpp } from 'smpp-ts/otel';
+
+const detach = instrumentSmpp(client, metrics.getMeter('sms-gateway'), {
+  attributes: { 'smpp.operator': 'orange-ci' },
+});
+instrumentSmpp(server, metrics.getMeter('smsc')); // ajoute smpp.system_id à chaque mesure
+```
+
+`smpp-ts/otel` n'importe pas `@opentelemetry/api` : il reçoit le `Meter` de votre application. Le paquet reste sans dépendance. Les instruments s'appellent `smpp.<métrique>` (`smpp.request.latency` en ms, `smpp.bytes.out` en octets…).
+
 ## Bas niveau
 
 ```ts
@@ -208,12 +259,18 @@ if (pdu.command === 'submit_sm') pdu.short_message; // typé
 const codec = new PduCodec({ customTlvs: [{ name: 'operator_ref', tag: 0x1501, type: 'cstring', max: 32 }] });
 ```
 
+## Mise en production
+
+Avant de brancher un opérateur, lisez le [guide de mise en production](docs/PRODUCTION.md) : les questions à lui poser, les réglages qui en découlent et les tests à lancer contre son SMSC de test.
+
 ## Développement
 
 ```sh
-npm test           # unitaires, propriétés, fuzzing (20 000 itérations), intégration
-npm run fuzz       # fuzzing du parseur, 1 000 000 d'itérations
+npm test               # unitaires, propriétés, fuzzing (20 000 itérations), intégration
+npm run fuzz           # fuzzing du parseur, 1 000 000 d'itérations
 npm run coverage
+npm run test:runtime   # test de fumée sur le paquet compilé (aussi : bun / deno run -A test/runtime/smoke.mjs)
+npm run test:interop   # contre un SMSC tiers, cf. test/interop/README.md
 npm run typecheck && npm run lint && npm run build
 ```
 
@@ -222,4 +279,3 @@ Voir [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) et [MIGRATIO
 ## Licence
 
 MIT
-# smpp-ts

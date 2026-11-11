@@ -3,6 +3,7 @@ import {
   COMMAND_STATUS,
   type DeliveryReport,
   type InboundMessage,
+  type MessageStatus,
   SmppClient,
   type SmppClientOptions,
   SmppServer,
@@ -115,7 +116,7 @@ describe('client ↔ server', () => {
     });
     await client.sendText({ to: '0700000000', from: '1234', text: 'x' });
     expect(captured).toMatchObject({ source_addr_ton: 0, source_addr_npi: 1, dest_addr_ton: 0 });
-    await expect(client.sendText({ to: 'ABC', from: '1', text: 'x' })).rejects.toThrow(/numeric/);
+    await expect(client.sendText({ to: 'ABC', from: '1', text: 'x' })).rejects.toThrow(/phone number/);
   });
 
   it('receives delivery reports and MO messages (reassembled)', async () => {
@@ -483,5 +484,77 @@ describe('client ↔ server', () => {
       Object.assign(new Error('unheard'), { code: 'X' }),
     );
     expect(errors).toEqual(['unheard']);
+  });
+});
+
+describe('sendText addressing and delivery tracking', () => {
+  it('rejects an invalid sender before anything is sent', async () => {
+    let submits = 0;
+    const { port } = await startServer({
+      handlers: {
+        submit_sm: () => {
+          submits++;
+          return { message_id: 'X' };
+        },
+      },
+    });
+    const client = makeClient(port);
+    await client.connect();
+    await expect(
+      client.sendText({ to: '+2250700000000', from: 'MonEntrepriseCI', text: 'x' }),
+    ).rejects.toThrow(/max 11/);
+    await client.sendText({ to: '00225 07 00 00 00 00', from: 'MISSOU', text: 'x' });
+    expect(submits).toBe(1);
+  });
+
+  it('aggregates per-segment receipts into one messageStatus', async () => {
+    const { server, port } = await startServer();
+    const client = makeClient(port, { trackDeliveries: true });
+    const statuses: MessageStatus[] = [];
+    client.on('messageStatus', (s) => statuses.push(s));
+    await client.connect();
+    await until(() => server.sessions.size === 1 && [...server.sessions][0]!.canDeliver);
+    const ss = [...server.sessions][0]!;
+
+    const result = await client.sendText({
+      to: '+2250700000000',
+      from: 'MISSOU',
+      text: 'a'.repeat(400),
+      registeredDelivery: true,
+      reference: 'order-42',
+    });
+    expect(result.parts).toBe(3);
+    expect(client.trackedMessages).toBe(1);
+
+    for (const [i, messageId] of result.messageIds.entries()) {
+      await ss.deliverReceipt({
+        messageId,
+        status: i === 2 ? 'UNDELIVERABLE' : 'DELIVERED',
+        source: '2250700000000',
+        destination: 'MISSOU',
+      });
+    }
+    await until(() => statuses.length === 1);
+    expect(statuses[0]).toMatchObject({
+      outcome: 'PARTIALLY_DELIVERED',
+      reference: 'order-42',
+      messageIds: result.messageIds,
+    });
+    expect(client.trackedMessages).toBe(0);
+  });
+
+  it('does not track without trackDeliveries or without a final receipt request', async () => {
+    const { port } = await startServer();
+    const plain = makeClient(port);
+    await plain.connect();
+    await plain.sendText({ to: '+2250700000000', from: 'MISSOU', text: 'x', registeredDelivery: true });
+    expect(plain.trackedMessages).toBe(0);
+
+    const tracking = makeClient(port, { trackDeliveries: { ttl: 1000 } });
+    await tracking.connect();
+    await tracking.sendText({ to: '+2250700000000', from: 'MISSOU', text: 'x', registeredDelivery: 0x02 });
+    expect(tracking.trackedMessages).toBe(0);
+    await tracking.sendText({ to: '+2250700000000', from: 'MISSOU', text: 'x', registeredDelivery: true });
+    expect(tracking.trackedMessages).toBe(1);
   });
 });

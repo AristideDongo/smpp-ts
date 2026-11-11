@@ -21,7 +21,7 @@ import {
 import { type Logger, silentLogger } from '../logger.js';
 import type { Metric } from '../metrics.js';
 import { COMMANDS, type RequestCommandName, responseNameOf } from '../protocol/commands.js';
-import { NPI, REGISTERED_DELIVERY, TON } from '../protocol/constants.js';
+import { REGISTERED_DELIVERY } from '../protocol/constants.js';
 import { COMMAND_STATUS, type StatusCategory, defaultStatusClassifier } from '../protocol/status.js';
 import { type RateLimitOptions, TokenBucket } from '../session/rate-limiter.js';
 import { type RequestOptions, type ResponseOf, Session } from '../session/session.js';
@@ -33,6 +33,12 @@ import {
   connectSocket,
   parseSmppUrl,
 } from '../transport/connection.js';
+import { type AddressOptions, resolveAddress } from '../utils/address.js';
+import {
+  DeliveryTracker,
+  type DeliveryTrackerOptions,
+  type MessageStatus,
+} from '../utils/delivery-tracker.js';
 import {
   type DeliveryReport,
   type MessageIdFormat,
@@ -99,6 +105,13 @@ export interface SmppClientOptions {
   autoAck?: boolean;
   /** Normalisation des message_id des accusés. Défaut : `as-is`. */
   messageIdFormat?: MessageIdFormat;
+  /** Normalisation et validation des adresses de `sendText` (numéros, expéditeur alphanumérique). */
+  address?: AddressOptions;
+  /**
+   * Regroupe les accusés des segments d'un message envoyé par `sendText` (avec `registeredDelivery`)
+   * et émet `messageStatus` avec l'issue globale. Désactivé par défaut.
+   */
+  trackDeliveries?: boolean | DeliveryTrackerOptions;
   multipart?: {
     strategy?: MultipartStrategy;
     /** Tables de shift nationales autorisées pour la détection automatique. */
@@ -135,6 +148,8 @@ export interface SendTextOptions {
   /** Paramètres submit_sm supplémentaires (TLV…). */
   params?: PduParams<'submit_sm'>;
   timeout?: number;
+  /** Référence applicative renvoyée dans l'événement `messageStatus` (avec `trackDeliveries`). */
+  reference?: string;
 }
 
 export interface SendTextResult {
@@ -163,6 +178,8 @@ export interface ClientEvents {
   dataSm: [pdu: DataSm];
   alert: [pdu: PduOf<'alert_notification'>];
   deliveryReport: [dlr: DeliveryReport, pdu: DeliverSm | DataSm];
+  /** Issue globale d'un message suivi (option `trackDeliveries`). */
+  messageStatus: [status: MessageStatus];
   message: [message: InboundMessage];
   partialMessage: [message: InboundMessage];
   reconnecting: [attempt: number, delayMs: number];
@@ -189,8 +206,6 @@ export type RawApi = {
   [C in RawCommand]: (params?: PduParams<C>, options?: RequestOptions) => Promise<ResponseOf<C>>;
 };
 
-const isAlphanumeric = (addr: string) => !/^\+?\d+$/.test(addr);
-
 /** Client SMPP (ESME). */
 export class SmppClient extends EventEmitter<ClientEvents> {
   readonly raw: RawApi;
@@ -205,6 +220,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
   private readonly reassembler: Reassembler<DeliverSm | DataSm>;
   private readonly reconnectOptions: ReconnectOptions | undefined;
   private readonly retryOptions: RetryOptions | undefined;
+  private readonly tracker: DeliveryTracker | undefined;
 
   private session: Session | undefined;
   private connecting: Promise<void> | undefined;
@@ -240,7 +256,18 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     if (!options.bind?.system_id || options.bind.password === undefined) {
       throw new SmppError('SMPP_CONFIG', 'bind.system_id and bind.password are required');
     }
+    this.tracker = options.trackDeliveries
+      ? new DeliveryTracker(
+          (status) => this.emitSafe('messageStatus', status),
+          options.trackDeliveries === true ? {} : options.trackDeliveries,
+        )
+      : undefined;
     this.raw = this.buildRaw();
+  }
+
+  /** Messages en attente d'accusés (option `trackDeliveries`). */
+  get trackedMessages(): number {
+    return this.tracker?.size ?? 0;
   }
 
   // ---------------------------------------------------------------- état
@@ -378,6 +405,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
       () => new SmppConnectionClosedError(false, 'Client closed before sending', { cause }),
     );
     this.reassembler.clear();
+    this.tracker?.clear();
     this.emitSafe('close');
   }
 
@@ -503,6 +531,18 @@ export class SmppClient extends EventEmitter<ClientEvents> {
    * renvoie tous les message_id.
    */
   async sendText(opts: SendTextOptions): Promise<SendTextResult> {
+    // Adresses validées avant tout calcul : aucune requête n'est émise pour un message invalide.
+    const addressing = this.options.address ?? {};
+    const source = resolveAddress(opts.from, 'source', {
+      ...addressing,
+      ton: opts.sourceTon,
+      npi: opts.sourceNpi,
+    });
+    const dest = resolveAddress(opts.to, 'destination', {
+      ...addressing,
+      ton: opts.destTon,
+      npi: opts.destNpi,
+    });
     const mp = this.options.multipart ?? {};
     const reference = this.nextConcatRef();
     const built = buildParts(opts.text, {
@@ -517,11 +557,6 @@ export class SmppClient extends EventEmitter<ClientEvents> {
       ...(opts.params?.esm_class !== undefined ? { esmClass: opts.params.esm_class } : {}),
     });
 
-    const source = addressParams(opts.from, opts.sourceTon, opts.sourceNpi);
-    const dest = addressParams(opts.to, opts.destTon, opts.destNpi);
-    if (isAlphanumeric(dest.addr)) {
-      throw new SmppError('SMPP_VALIDATION', 'Destination address must be numeric');
-    }
     const registered =
       opts.registeredDelivery === true
         ? REGISTERED_DELIVERY.FINAL
@@ -562,8 +597,15 @@ export class SmppClient extends EventEmitter<ClientEvents> {
         ),
       );
     }
+    const messageIds = results.map(
+      (r) => (r as PromiseFulfilledResult<ResponseOf<'submit_sm'>>).value.message_id,
+    );
+    // Suivi uniquement si un accusé final est demandé quel que soit le résultat (bits 0-1 = 01) :
+    // avec « échec seulement » ou « succès seulement », l'absence d'accusé ne permet pas de conclure.
+    const wantsReceipt = ((base.registered_delivery ?? 0) & 0x03) === REGISTERED_DELIVERY.FINAL;
+    if (this.tracker && wantsReceipt) this.tracker.track(messageIds, opts.reference);
     return {
-      messageIds: results.map((r) => (r as PromiseFulfilledResult<ResponseOf<'submit_sm'>>).value.message_id),
+      messageIds,
       parts: built.parts.length,
       encoding: built.encoding.toUpperCase(),
     };
@@ -633,6 +675,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
         const dlr = buildDeliveryReport(pdu, content.text, this.options.messageIdFormat ?? 'as-is');
         if (dlr) {
           this.emitSafe('deliveryReport', dlr, pdu);
+          this.tracker?.handle(dlr);
           return;
         }
       }
@@ -724,19 +767,6 @@ function pick<T extends object, K extends keyof T>(obj: T, keys: K[]): Partial<P
   const out: Partial<Pick<T, K>> = {};
   for (const k of keys) if (obj[k] !== undefined) out[k] = obj[k];
   return out;
-}
-
-/**
- * TON/NPI automatiques :
- * - alphanumérique → TON 5 (alphanumeric), NPI 0 ;
- * - `+chiffres` → TON 1 (international), NPI 1 (E.164), le `+` est retiré ;
- * - chiffres → TON 0 (unknown), NPI 1.
- */
-function addressParams(addr: string, ton?: number, npi?: number): { addr: string; ton: number; npi: number } {
-  if (isAlphanumeric(addr)) return { addr, ton: ton ?? TON.ALPHANUMERIC, npi: npi ?? NPI.UNKNOWN };
-  if (addr.startsWith('+'))
-    return { addr: addr.slice(1), ton: ton ?? TON.INTERNATIONAL, npi: npi ?? NPI.ISDN };
-  return { addr, ton: ton ?? TON.UNKNOWN, npi: npi ?? NPI.ISDN };
 }
 
 function toSmppTime(value: Date | number | string | undefined): string {

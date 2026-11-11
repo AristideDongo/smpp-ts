@@ -38,6 +38,64 @@ jobs:
       - run: npm ci
       - run: npm run coverage
 
+  runtimes:
+    name: smoke (${{ matrix.runtime }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [bun, deno]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - if: matrix.runtime == 'bun'
+        uses: oven-sh/setup-bun@v2
+      - if: matrix.runtime == 'bun'
+        run: bun test/runtime/smoke.mjs
+      - if: matrix.runtime == 'deno'
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - if: matrix.runtime == 'deno'
+        run: deno run --allow-net --allow-read --allow-env test/runtime/smoke.mjs
+
+  interop:
+    runs-on: ubuntu-latest
+    # Simulateur tiers : un échec signale une variante à absorber, sans bloquer la PR
+    # tant que la suite n'a pas tourné au vert sur plusieurs exécutions.
+    continue-on-error: true
+    env:
+      # L'image Docker Hub `ukarim/smscsim:latest` n'est pas compilée pour amd64 :
+      # on compile le simulateur depuis ses sources, à un commit fixé.
+      SMSCSIM_REF: 92ca8a83a1c84326421ad61a9cc9eb177931ee5f
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: false
+      - run: go install github.com/ukarim/smscsim@${SMSCSIM_REF}
+      - name: Start SMSC simulator
+        run: |
+          nohup "$(go env GOPATH)/bin/smscsim" > smscsim.log 2>&1 &
+          for i in $(seq 1 50); do (echo > /dev/tcp/127.0.0.1/2775) 2>/dev/null && exit 0; sleep 0.2; done
+          cat smscsim.log; exit 1
+      - run: npm ci
+      - run: npm run test:interop
+        env:
+          SMPP_INTEROP_URL: smpp://127.0.0.1:2775
+      - if: always()
+        run: cat smscsim.log
+
   fuzz:
     runs-on: ubuntu-latest
     if: github.event_name == 'push'

@@ -3,7 +3,13 @@
  *
  *   SMPP_URL=ssmpp://smsc.example.com:3550 SMPP_USER=xxx SMPP_PASSWORD=yyy npx tsx examples/client.ts
  */
-import { SmppClient, SmppConnectionClosedError, SmppStatusError, SmppTimeoutError } from '../src/index.js';
+import {
+  SmppClient,
+  SmppConnectionClosedError,
+  SmppStatusError,
+  SmppTimeoutError,
+  SmppValidationError,
+} from '../src/index.js';
 
 const client = new SmppClient({
   url: process.env.SMPP_URL ?? 'smpp://127.0.0.1:2775',
@@ -20,11 +26,14 @@ const client = new SmppClient({
   requestTimeout: 10_000,
   logger: console,
   redactContent: true,
+  // Regroupe les accusés des segments d'un SMS long : un seul événement `messageStatus` par message.
+  trackDeliveries: true,
 });
 
 client.on('stateChange', (from, to) => console.log(`state: ${from} -> ${to}`));
 client.on('reconnecting', (attempt, delay) => console.log(`reconnecting #${attempt} in ${delay} ms`));
 client.on('deliveryReport', (dlr) => console.log('DLR', dlr.messageId, dlr.status));
+client.on('messageStatus', (s) => console.log(`message ${s.reference}: ${s.outcome} (${s.parts} part(s))`));
 client.on('message', (msg) => console.log(`MO from ${msg.from}: ${msg.text}`));
 client.on('error', (err) => console.error('SMPP error', err.code, err.message));
 
@@ -36,10 +45,14 @@ try {
     from: 'MISSOU',
     text: 'Votre code est 123456 🎉',
     registeredDelivery: true,
+    reference: 'otp-42', // votre identifiant, renvoyé dans `messageStatus`
   });
   console.log('sent', result); // { messageIds: ['...'], parts: 1, encoding: 'UCS2' }
 } catch (err) {
-  if (err instanceof SmppStatusError) {
+  if (err instanceof SmppValidationError) {
+    // Rien n'est parti : expéditeur trop long, numéro invalide…
+    console.error(`invalid ${err.field}: ${err.message}`);
+  } else if (err instanceof SmppStatusError) {
     console.error(`refused by the SMSC: ${err.statusName} (${err.category})`);
   } else if (err instanceof SmppTimeoutError || err instanceof SmppConnectionClosedError) {
     // `written: false` → jamais parti, renvoi sans risque ; `true` → peut-être accepté, risque de doublon.

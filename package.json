@@ -21,6 +21,16 @@
         "default": "./dist/index.cjs"
       }
     },
+    "./otel": {
+      "import": {
+        "types": "./dist/otel.d.ts",
+        "default": "./dist/otel.js"
+      },
+      "require": {
+        "types": "./dist/otel.d.cts",
+        "default": "./dist/otel.cjs"
+      }
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -36,7 +46,8 @@
     "smsc",
     "esme",
     "gsm",
-    "typescript"
+    "typescript",
+    "opentelemetry"
   ],
   "scripts": {
     "build": "tsup",
@@ -45,6 +56,8 @@
     "format": "biome format --write .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:runtime": "npm run build && node test/runtime/smoke.mjs",
+    "test:interop": "vitest run --config vitest.interop.config.ts",
     "coverage": "vitest run --coverage",
     "fuzz": "FUZZ_RUNS=1000000 vitest run test/fuzz --testTimeout=3600000",
     "prepublishOnly": "npm run typecheck && npm run test && npm run build"
