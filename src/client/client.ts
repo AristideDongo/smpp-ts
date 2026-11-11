@@ -41,21 +41,23 @@ import {
   type DeliveryTrackerOptions,
   type MessageStatus,
 } from '../utils/delivery-tracker.js';
-import {
-  type DeliveryReport,
-  type MessageIdFormat,
-  buildDeliveryReport,
-  isDeliveryReceipt,
-} from '../utils/dlr.js';
-import {
-  type ReassembledMessage,
-  Reassembler,
-  buildParts,
-  decodeMessageContent,
-} from '../utils/multipart.js';
+import type { DeliveryReport, MessageIdFormat } from '../utils/dlr.js';
+import { buildParts } from '../utils/multipart.js';
 import type { MultipartStrategy } from '../utils/segments.js';
 import { formatAbsoluteTime, formatRelativeTime } from '../utils/time.js';
+import { type InboundMessage, InboundProcessor, wantsFinalReceipt } from './inbound.js';
 import { type ReconnectOptions, type RetryOptions, backoffDelay, cancellableSleep } from './reconnect.js';
+
+export type { InboundMessage } from './inbound.js';
+
+/**
+ * @internal Wiring used by `SmppPool`: its members share inbound processing (reassembly, receipts)
+ * and concatenation references.
+ */
+export interface ClientInternals {
+  inbound?: InboundProcessor;
+  nextConcatRef?: () => number;
+}
 
 export interface BindOptions {
   mode: BindMode;
@@ -176,19 +178,6 @@ export interface SendTextResult {
   encoding: string;
 }
 
-export interface InboundMessage {
-  from: string;
-  to: string;
-  /** Text, or `undefined` for binary content. */
-  text?: string;
-  body: Buffer;
-  dataCoding: number;
-  parts: number;
-  /** Missing segments (partialMessage only). */
-  missing: number[];
-  pdus: Array<DeliverSm | DataSm>;
-}
-
 export interface ClientEvents {
   stateChange: [from: SessionState, to: SessionState];
   bound: [systemId: string];
@@ -235,10 +224,12 @@ export class SmppClient extends EventEmitter<ClientEvents> {
   private readonly codec: PduCodec;
   private readonly registry: EncodingRegistry;
   private readonly rateLimiter: TokenBucket | undefined;
-  private readonly reassembler: Reassembler<DeliverSm | DataSm>;
+  private readonly inbound: InboundProcessor;
+  /** The inbound processor belongs to this client (not shared by a pool). */
+  private readonly ownsInbound: boolean;
+  private readonly nextConcatRefFn: (() => number) | undefined;
   private readonly reconnectOptions: ReconnectOptions | undefined;
   private readonly retryOptions: RetryOptions | undefined;
-  private readonly tracker: DeliveryTracker | undefined;
 
   private session: Session | undefined;
   private connecting: Promise<void> | undefined;
@@ -248,7 +239,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
   private sleeper: { cancel: () => void } | undefined;
   private concatRef = Math.floor(Math.random() * 0x10000);
 
-  constructor(options: SmppClientOptions) {
+  constructor(options: SmppClientOptions, internals: ClientInternals = {}) {
     super();
     this.options = options;
     this.logger = options.logger ?? silentLogger;
@@ -265,27 +256,41 @@ export class SmppClient extends EventEmitter<ClientEvents> {
           ? {}
           : options.reconnect;
     this.retryOptions = options.retry === false ? undefined : (options.retry ?? {});
-    this.reassembler = new Reassembler({
-      ...(options.reassembly?.ttl !== undefined ? { ttl: options.reassembly.ttl } : {}),
-      ...(options.reassembly?.maxBuffers !== undefined ? { maxBuffers: options.reassembly.maxBuffers } : {}),
-      registry: this.registry,
-      onPartial: (msg) => this.emitSafe('partialMessage', toInbound(msg)),
-    });
     if (!options.bind?.system_id || options.bind.password === undefined) {
       throw new SmppError('SMPP_CONFIG', 'bind.system_id and bind.password are required');
     }
-    this.tracker = options.trackDeliveries
-      ? new DeliveryTracker(
-          (status) => this.emitSafe('messageStatus', status),
-          options.trackDeliveries === true ? {} : options.trackDeliveries,
-        )
-      : undefined;
+    this.ownsInbound = internals.inbound === undefined;
+    this.inbound =
+      internals.inbound ??
+      new InboundProcessor(
+        {
+          registry: this.registry,
+          logger: this.logger,
+          packedGsm7: options.packedGsm7 ?? false,
+          messageIdFormat: options.messageIdFormat ?? 'as-is',
+          ...(options.reassembly ? { reassembly: options.reassembly } : {}),
+          ...(options.trackDeliveries
+            ? {
+                tracker: new DeliveryTracker(
+                  (status) => this.emitSafe('messageStatus', status),
+                  options.trackDeliveries === true ? {} : options.trackDeliveries,
+                ),
+              }
+            : {}),
+        },
+        {
+          deliveryReport: (dlr, pdu) => this.emitSafe('deliveryReport', dlr, pdu),
+          message: (msg) => this.emitSafe('message', msg),
+          partialMessage: (msg) => this.emitSafe('partialMessage', msg),
+        },
+      );
+    this.nextConcatRefFn = internals.nextConcatRef;
     this.raw = this.buildRaw();
   }
 
   /** Messages awaiting receipts (`trackDeliveries` option). */
   get trackedMessages(): number {
-    return this.tracker?.size ?? 0;
+    return this.inbound.tracker?.size ?? 0;
   }
 
   // ---------------------------------------------------------------- state
@@ -428,8 +433,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     this.queue.rejectAll(
       () => new SmppConnectionClosedError(false, 'Client closed before sending', { cause }),
     );
-    this.reassembler.clear();
-    this.tracker?.clear();
+    if (this.ownsInbound) this.inbound.clear();
     this.emitSafe('close');
   }
 
@@ -647,8 +651,9 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     );
     // Track only when a final receipt is requested whatever the outcome (bits 0-1 = 01):
     // with "failure only" or "success only", a missing receipt proves nothing.
-    const wantsReceipt = ((base.registered_delivery ?? 0) & 0x03) === REGISTERED_DELIVERY.FINAL;
-    if (this.tracker && wantsReceipt) this.tracker.track(messageIds, opts.reference);
+    const tracker = this.inbound.tracker;
+    if (tracker && wantsFinalReceipt(base.registered_delivery ?? 0))
+      tracker.track(messageIds, opts.reference);
     return {
       messageIds,
       parts: built.parts.length,
@@ -685,11 +690,11 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     switch (pdu.command) {
       case 'deliver_sm':
         this.emitSafe('deliver', pdu);
-        this.handleInbound(pdu);
+        this.inbound.handle(pdu);
         break;
       case 'data_sm':
         this.emitSafe('dataSm', pdu);
-        this.handleInbound(pdu);
+        this.inbound.handle(pdu);
         break;
       case 'alert_notification':
         this.emitSafe('alert', pdu);
@@ -705,54 +710,10 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     if (this.options.autoAck ?? true) session.respond(pdu, {});
   }
 
-  private handleInbound(pdu: DeliverSm | DataSm): void {
-    try {
-      const content = decodeMessageContent(
-        { ...pdu, short_message: 'short_message' in pdu ? pdu.short_message : undefined } as Parameters<
-          typeof decodeMessageContent
-        >[0],
-        { registry: this.registry, packedGsm7: this.options.packedGsm7 ?? false },
-      );
-      if (isDeliveryReceipt(pdu)) {
-        const dlr = buildDeliveryReport(pdu, content.text, this.options.messageIdFormat ?? 'as-is');
-        if (dlr) {
-          this.emitSafe('deliveryReport', dlr, pdu);
-          this.tracker?.handle(dlr);
-          return;
-        }
-      }
-      if (content.concat) {
-        const done = this.reassembler.add({
-          source: pdu.source_addr,
-          destination: pdu.destination_addr,
-          concat: content.concat,
-          body: content.body,
-          dataCoding: pdu.data_coding,
-          ...(content.udh?.shift ? { shift: content.udh.shift } : {}),
-          meta: pdu,
-        });
-        if (done) this.emitSafe('message', toInbound(done));
-        return;
-      }
-      const msg: InboundMessage = {
-        from: pdu.source_addr,
-        to: pdu.destination_addr,
-        body: content.body,
-        dataCoding: pdu.data_coding,
-        parts: 1,
-        missing: [],
-        pdus: [pdu],
-      };
-      if (content.text !== undefined) msg.text = content.text;
-      this.emitSafe('message', msg);
-    } catch (err) {
-      this.logger.error('failed to process inbound message', { error: toError(err).message });
-    }
-  }
-
   // ---------------------------------------------------------------- helpers
 
   private nextConcatRef(): number {
+    if (this.nextConcatRefFn) return this.nextConcatRefFn() & 0xffff;
     this.concatRef = (this.concatRef + 1) & 0xffff;
     return this.concatRef;
   }
@@ -850,18 +811,4 @@ function toSmppTime(value: Date | number | string | undefined): string {
   if (typeof value === 'string') return value;
   if (typeof value === 'number') return formatRelativeTime(value);
   return formatAbsoluteTime(value);
-}
-
-function toInbound(msg: ReassembledMessage<DeliverSm | DataSm>): InboundMessage {
-  const out: InboundMessage = {
-    from: msg.source,
-    to: msg.destination,
-    body: msg.body,
-    dataCoding: msg.dataCoding,
-    parts: msg.total,
-    missing: msg.missing,
-    pdus: msg.segments.map((s) => s.meta),
-  };
-  if (msg.text !== undefined) out.text = msg.text;
-  return out;
 }

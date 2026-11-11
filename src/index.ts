@@ -1,5 +1,9 @@
 // Client / server
 export { SmppClient } from './client/client.js';
+export { SmppPool } from './client/pool.js';
+export type { PoolEvents, PoolStrategy, SmppPoolOptions } from './client/pool.js';
+export { InboundProcessor } from './client/inbound.js';
+export type { InboundProcessorOptions, InboundSink } from './client/inbound.js';
 export type {
   BindOptions,
   ClientEvents,
