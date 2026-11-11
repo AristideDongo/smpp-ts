@@ -21,6 +21,16 @@
         "default": "./dist/index.cjs"
       }
     },
+    "./otel": {
+      "import": {
+        "types": "./dist/otel.d.ts",
+        "default": "./dist/otel.js"
+      },
+      "require": {
+        "types": "./dist/otel.d.cts",
+        "default": "./dist/otel.cjs"
+      }
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -36,7 +46,8 @@
     "smsc",
     "esme",
     "gsm",
-    "typescript"
+    "typescript",
+    "opentelemetry"
   ],
   "scripts": {
     "build": "tsup",
