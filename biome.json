@@ -1,6 +1,7 @@
 {
   "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
   "files": {
+    "ignore": ["dist", "coverage", "docs-site", "node_modules", "package.json", "package-lock.json"]
     "ignore": [
       "dist",
       "coverage",

@@ -20,7 +20,12 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm audit --audit-level=moderate
+      # What users install: no known vulnerability from "moderate" up.
+      - run: npm audit --omit=dev --audit-level=moderate
+      # Development tools (never shipped): blocking from "high" up.
+      - run: npm audit --audit-level=high
+      # API reference and guides build without warnings (broken links, missing exports).
+      - run: npm run docs:check
       - run: npm run build
       - run: node dist/cli.js --version && node dist/cli.js --help > /dev/null
       # Publishing to JSR must keep working (dry run, no token needed).
