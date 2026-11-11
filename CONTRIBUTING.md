@@ -26,6 +26,20 @@ Add a changeset describing the change for users:
 npx changeset
 ```
 
+## Releasing (maintainer)
+
+Releases and the documentation site are published by hand, not by CI:
+
+```sh
+npm run version-packages          # applies the changesets: version, CHANGELOG, jsr.json
+git commit -am "chore: release X.Y.Z" && git tag vX.Y.Z && git push --follow-tags
+npm publish                       # runs typecheck, tests and build first (prepublishOnly)
+npm run jsr:publish
+gh release create vX.Y.Z --notes-from-tag
+
+npm run docs && npm run coverage && node scripts/coverage-badge.mjs   # site in docs-site/
+```
+
 ## Rules
 
 - **Layered architecture**: a layer only depends on the layers below it (`protocol` → `codec`/`encoding` → `transport` → `session` → `client`/`server`). `codec` and `encoding` never import `net`, `tls` or `events`.
