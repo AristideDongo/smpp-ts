@@ -68,6 +68,20 @@ export class SmppConnectionClosedError extends SmppError {
   }
 }
 
+/** The request was cancelled through its `AbortSignal`. */
+export class SmppAbortError extends SmppError {
+  /**
+   * `true`: the PDU was already written and the SMSC may have accepted it.
+   * `false`: the PDU never left and can be resent safely.
+   */
+  readonly written: boolean;
+
+  constructor(written: boolean, detail = 'Request', options?: { cause?: unknown }) {
+    super('SMPP_ABORTED', `${detail} aborted (request ${written ? 'was' : 'was not'} written)`, options);
+    this.written = written;
+  }
+}
+
 /** The send queue is full (REL-03). */
 export class SmppQueueFullError extends SmppError {
   readonly maxQueueSize: number;

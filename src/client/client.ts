@@ -11,11 +11,13 @@ import {
 import type { NationalLanguage } from '../encoding/gsm7.js';
 import { type EncodingRegistry, encodings } from '../encoding/registry.js';
 import {
+  SmppAbortError,
   SmppConnectionClosedError,
   SmppError,
   SmppMultipartError,
   SmppStateError,
   SmppStatusError,
+  SmppValidationError,
   toError,
 } from '../errors.js';
 import { type Logger, silentLogger } from '../logger.js';
@@ -118,7 +120,14 @@ export interface SmppClientOptions {
     shiftTables?: NationalLanguage[];
     allowLatin1?: boolean;
     packGsm7?: boolean;
+    /**
+     * Maximum number of segments for one `sendText` (each segment is billed as one SMS).
+     * A longer text is rejected before anything is sent. Default: 255 (protocol maximum).
+     */
+    maxSegments?: number;
   };
+  /** Bytes allowed in the socket write buffer before the session is closed. Default: 1 MiB. */
+  maxWriteBuffer?: number;
   reassembly?: { ttl?: number; maxBuffers?: number };
   /** Incoming GSM7 septets are packed. Default: false. */
   packedGsm7?: boolean;
@@ -148,6 +157,15 @@ export interface SendTextOptions {
   /** Extra submit_sm parameters (TLVs…). */
   params?: PduParams<'submit_sm'>;
   timeout?: number;
+  /** Cancels the segments not sent yet (`SmppAbortError`). */
+  signal?: AbortSignal;
+  /** Overrides `multipart.maxSegments` for this message. */
+  maxSegments?: number;
+  /**
+   * Flash SMS (message class 0): displayed at once and not stored by the handset.
+   * Supported with GSM7, UCS2 and binary content; rejected with Latin-1 and ASCII.
+   */
+  flash?: boolean;
   /** Application reference echoed in the `messageStatus` event (with `trackDeliveries`). */
   reference?: string;
 }
@@ -329,7 +347,13 @@ export class SmppClient extends EventEmitter<ClientEvents> {
       queue: this.queue,
       ...(this.rateLimiter ? { rateLimiter: this.rateLimiter } : {}),
       ...(classify ? { classifyStatus: (s: number) => classify(s, defaultStatusClassifier(s)) } : {}),
-      ...pick(o, ['requestTimeout', 'enquireLinkInterval', 'enquireLinkTimeout', 'unbindTimeout']),
+      ...pick(o, [
+        'requestTimeout',
+        'enquireLinkInterval',
+        'enquireLinkTimeout',
+        'unbindTimeout',
+        'maxWriteBuffer',
+      ]),
       logContext: { systemId: o.bind.system_id, host: this.endpoint.host },
     });
     this.session = session;
@@ -471,7 +495,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
           status: err.statusName,
           delayMs: delay,
         });
-        await new Promise((r) => setTimeout(r, delay));
+        await abortableDelay(delay, options.signal, command);
       }
     }
   }
@@ -513,7 +537,12 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     try {
       const encoded = this.codec.encode({ ...params, command, sequence_number: 0 } as never);
       const timeoutMs = options.timeout ?? this.options.requestTimeout ?? 10_000;
-      const { request, promise } = createPendingRequest({ command, encoded, timeoutMs });
+      const { request, promise } = createPendingRequest({
+        command,
+        encoded,
+        timeoutMs,
+        signal: options.signal,
+      });
       this.queue.push(request);
       return promise as Promise<ResponseOf<C>>;
     } catch (err) {
@@ -557,6 +586,19 @@ export class SmppClient extends EventEmitter<ClientEvents> {
       ...(opts.params?.esm_class !== undefined ? { esmClass: opts.params.esm_class } : {}),
     });
 
+    const maxSegments = opts.maxSegments ?? mp.maxSegments ?? 255;
+    if (built.parts.length > maxSegments) {
+      throw new SmppValidationError(
+        `Text needs ${built.parts.length} segments, over maxSegments (${maxSegments})`,
+        'text',
+        COMMAND_STATUS.ESME_RINVMSGLEN,
+      );
+    }
+    if (opts.flash) {
+      const dataCoding = flashDataCoding(built.dataCoding);
+      for (const part of built.parts) part.data_coding = dataCoding;
+    }
+
     const registered =
       opts.registeredDelivery === true
         ? REGISTERED_DELIVERY.FINAL
@@ -584,7 +626,10 @@ export class SmppClient extends EventEmitter<ClientEvents> {
         this.request(
           'submit_sm',
           { ...base, ...part },
-          opts.timeout !== undefined ? { timeout: opts.timeout } : {},
+          {
+            ...(opts.timeout !== undefined ? { timeout: opts.timeout } : {}),
+            ...(opts.signal ? { signal: opts.signal } : {}),
+          },
         ),
       ),
     );
@@ -756,6 +801,42 @@ function resolveEndpoint(o: SmppClientOptions): Endpoint {
   if (!o.host) throw new SmppError('SMPP_CONFIG', 'Either url or host is required');
   const tlsEnabled = Boolean(o.tls);
   return { host: o.host, port: o.port ?? (tlsEnabled ? 3550 : 2775), tls: tlsEnabled };
+}
+
+/** Waits `ms`, or rejects with `SmppAbortError` (nothing written) if the signal fires first. */
+function abortableDelay(ms: number, signal: AbortSignal | undefined, command: string): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new SmppAbortError(false, command, { cause: signal.reason }));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new SmppAbortError(false, command, { cause: signal?.reason }));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/**
+ * data_coding with message class 0 (flash), 3GPP TS 23.038 §4, general coding group:
+ * bit 4 = class present, bits 3-2 = alphabet, bits 1-0 = class.
+ */
+function flashDataCoding(dataCoding: number): number {
+  switch (dataCoding) {
+    case 0x00: // SMSC default / GSM7
+      return 0x10;
+    case 0x04: // 8-bit binary
+      return 0x14;
+    case 0x08: // UCS2
+      return 0x18;
+    default:
+      throw new SmppValidationError(
+        `Flash SMS is not available with data_coding 0x${dataCoding.toString(16).padStart(2, '0')}`,
+        'flash',
+      );
+  }
 }
 
 function pick<T extends object, K extends keyof T>(obj: T, keys: K[]): Partial<Pick<T, K>> {

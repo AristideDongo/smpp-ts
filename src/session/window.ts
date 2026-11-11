@@ -1,5 +1,5 @@
 import type { Pdu } from '../codec/pdu.js';
-import { SmppQueueFullError, SmppTimeoutError } from '../errors.js';
+import { SmppAbortError, SmppQueueFullError, SmppTimeoutError } from '../errors.js';
 import type { CommandName } from '../protocol/commands.js';
 
 export type RequestPhase = 'queued' | 'inflight' | 'done';
@@ -33,6 +33,10 @@ export interface CreateRequestOptions {
   timeoutMs: number;
   control?: boolean;
   onTimeout?: (req: PendingRequest) => void;
+  /** Cancels the request (`SmppAbortError`). */
+  signal?: AbortSignal | undefined;
+  /** Called after an abort (e.g. to refill the window). */
+  onAbort?: (req: PendingRequest) => void;
 }
 
 /**
@@ -50,6 +54,12 @@ export function createPendingRequest(opts: CreateRequestOptions): {
     rejectFn = rej;
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const signal = opts.signal;
+  const onAbort = () => {
+    if (request.phase === 'done') return;
+    request.reject(new SmppAbortError(request.written, `${request.command}`, { cause: signal?.reason }));
+    opts.onAbort?.(request);
+  };
 
   const request: PendingRequest = {
     command: opts.command,
@@ -79,8 +89,17 @@ export function createPendingRequest(opts: CreateRequestOptions): {
     clear() {
       if (timer) clearTimeout(timer);
       timer = undefined;
+      signal?.removeEventListener('abort', onAbort);
     },
   };
+
+  if (signal?.aborted) {
+    // Never queued, never written.
+    request.phase = 'done';
+    rejectFn(new SmppAbortError(false, `${opts.command}`, { cause: signal.reason }));
+    return { request, promise };
+  }
+  signal?.addEventListener('abort', onAbort, { once: true });
 
   if (opts.timeoutMs > 0 && Number.isFinite(opts.timeoutMs)) {
     timer = setTimeout(() => expireRequest(request, opts.onTimeout), opts.timeoutMs);
@@ -113,6 +132,7 @@ export class RequestQueue {
 
   /** Adds a request; rejects it at once with `SmppQueueFullError` if the queue is full. */
   push(req: PendingRequest): void {
+    if (req.phase === 'done') return; // already settled (aborted before being queued)
     if (this.items.length >= this.maxSize) {
       // The request never enters the queue: disarm its timer so no orphan rejection fires.
       req.clear();

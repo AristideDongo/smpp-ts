@@ -167,6 +167,7 @@ export type { ProxyHeader, ProxyProtocolOptions } from './transport/proxy-protoc
 export {
   SmppConnectionClosedError,
   SmppDecodeError,
+  SmppAbortError,
   SmppError,
   SmppMultipartError,
   SmppQueueFullError,
