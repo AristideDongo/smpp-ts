@@ -10,6 +10,9 @@
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "smpp-ts": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "import": {

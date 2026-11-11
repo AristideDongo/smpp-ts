@@ -337,6 +337,34 @@ if (pdu.command === 'submit_sm') pdu.short_message; // typed
 const codec = new PduCodec({ customTlvs: [{ name: 'operator_ref', tag: 0x1501, type: 'cstring', max: 32 }] });
 ```
 
+## Command line
+
+The package ships a command with two tools, handy when you have no access to an operator's test SMSC yet.
+
+**SMSC simulator**: accepts binds, answers every `submit_sm`, sends receipts.
+
+```sh
+npx smpp-ts smsc --port 2775 --system-id demo --password secret --dlr random --echo
+```
+
+| Option | Default | Effect |
+|---|---|---|
+| `--port`, `--host` | 2775, 127.0.0.1 | Where to listen (local only by default) |
+| `--system-id`, `--password` | any | Credentials to accept |
+| `--dlr` | `delivered` | Receipts: `delivered`, `undeliverable`, `random` (80% delivered), `none` |
+| `--dlr-delay` | 1000 ms | Delay before each receipt |
+| `--echo` | off | Answers each SMS with an MO `echo: <text>` |
+| `--tls-key`, `--tls-cert` | none | Serves `ssmpp://` |
+
+**Send an SMS**, and optionally wait for its receipt (exit code 0 if delivered):
+
+```sh
+npx smpp-ts send --url smpp://127.0.0.1:2775 --system-id demo --password secret \
+  --from MYAPP --to +2250700000000 --text "Your code is 123456" --dlr
+```
+
+For an SMSC with a self-signed certificate, `--ca smsc-ca.pem`: verification stays on.
+
 ## Going to production
 
 Before connecting to an operator, read the [production guide](docs/PRODUCTION.md): what to ask them, the settings that follow from it and the tests to run against their test SMSC.
