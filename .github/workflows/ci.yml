@@ -180,12 +180,21 @@ jobs:
             package-lock.json
             base/package-lock.json
       - run: npm ci && npm run build
-      - run: npm ci && npm run build
+      # A base that does not build (e.g. the PR repairs it) has nothing to compare against.
+      - id: base
+        run: npm ci && npm run build
         working-directory: base
+        continue-on-error: true
+      - if: steps.base.outcome != 'success'
+        run: |
+          echo "Base branch does not build: comparison skipped." | tee -a "$GITHUB_STEP_SUMMARY"
       # The PR's bench script measures both builds, so the base needs no bench/ folder.
-      - run: node bench/run.mjs --dist base/dist --runs 5 --json base.json
-      - run: node bench/run.mjs --runs 5 --json head.json
+      - if: steps.base.outcome == 'success'
+        run: node bench/run.mjs --dist base/dist --runs 5 --json base.json
+      - if: steps.base.outcome == 'success'
+        run: node bench/run.mjs --runs 5 --json head.json
       - name: Compare
+        if: steps.base.outcome == 'success'
         run: |
           set -o pipefail
           node bench/compare.mjs base.json head.json | tee -a "$GITHUB_STEP_SUMMARY"
