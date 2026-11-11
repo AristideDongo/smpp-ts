@@ -25,6 +25,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run docs
+      # Coverage badge served with the site (shields.io endpoint), no third-party coverage service.
+      - run: npm run coverage
+      - run: node scripts/coverage-badge.mjs
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs-site
