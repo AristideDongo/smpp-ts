@@ -205,3 +205,65 @@ describe('#25: handlers receive an AbortSignal', () => {
     expect(seen?.aborted).toBe(false);
   });
 });
+
+describe('#31: one close listener per session, not per in-flight handler', () => {
+  it('25 slow handlers in flight: no MaxListenersExceededWarning, listener count stays constant', async () => {
+    const warnings: Error[] = [];
+    const onWarning = (w: Error) => {
+      if (w.name === 'MaxListenersExceededWarning') warnings.push(w);
+    };
+    process.on('warning', onWarning);
+    cleanups.push(async () => process.off('warning', onWarning));
+
+    let running = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const { server, port } = await startServer({
+      inboundWindow: 25,
+      handlers: {
+        submit_sm: async () => {
+          running++;
+          await gate;
+          return { message_id: 'M' };
+        },
+      },
+    });
+    const client = makeClient(port, { window: 25 });
+    await client.connect();
+    const [ss] = [...server.sessions];
+    const before = ss!.session.listenerCount('close');
+
+    const sends = Array.from({ length: 25 }, () => client.submit({ destination_addr: '1' }));
+    await until(() => running === 25);
+    expect(ss!.session.listenerCount('close')).toBe(before);
+
+    release();
+    await Promise.all(sends);
+    expect(ss!.session.listenerCount('close')).toBe(before);
+    await sleep(10); // warnings are emitted on the next tick
+    expect(warnings).toEqual([]);
+  });
+
+  it('every in-flight handler is still aborted when the session closes', async () => {
+    const signals: AbortSignal[] = [];
+    const { server, port } = await startServer({
+      inboundWindow: 15,
+      handlerTimeout: 60_000,
+      handlers: {
+        submit_sm: (_pdu, _ss, { signal }) => {
+          signals.push(signal);
+          return new Promise(() => {});
+        },
+      },
+    });
+    const client = makeClient(port, { window: 15 });
+    await client.connect();
+    for (let i = 0; i < 15; i++) void client.submit({ destination_addr: '1' }).catch(() => {});
+    await until(() => signals.length === 15);
+    for (const ss of server.sessions) ss.destroy();
+    await until(() => signals.every((s) => s.aborted));
+    expect(signals.every((s) => (s.reason as SmppError).code === 'SMPP_SESSION_CLOSED')).toBe(true);
+  });
+});
