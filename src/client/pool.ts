@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import type { DataSm, DeliverSm, PduOf, PduParams } from '../codec/pdu.js';
 import { encodings } from '../encoding/registry.js';
 import {
+  SmppAbortError,
   SmppConnectionClosedError,
   SmppError,
   SmppQueueFullError,
@@ -167,7 +168,7 @@ export class SmppPool extends EventEmitter<PoolEvents> {
    * in the background (unless `reconnect: false`). Rejects if every first attempt is over
    * and fewer than `minBound` members are bound.
    */
-  connect(): Promise<void> {
+  connect(options: { signal?: AbortSignal } = {}): Promise<void> {
     if (this.connecting) return this.connecting;
     this.closing = false;
     const need = Math.min(Math.max(1, this.options.minBound ?? 1), this.members.length);
@@ -178,9 +179,18 @@ export class SmppPool extends EventEmitter<PoolEvents> {
           if (this.boundCount >= need) resolve();
         };
       });
-      const first = Promise.allSettled(this.members.map((_, i) => this.connectMember(i)));
-      await Promise.race([ready, first]);
-      if (this.boundCount >= need) return;
+      const signal = options.signal;
+      const aborted = new Promise<void>((resolve) => {
+        if (signal?.aborted) resolve();
+        signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      const first = Promise.allSettled(this.members.map((_, i) => this.connectMember(i, 1, signal)));
+      await Promise.race([ready, first, aborted]);
+      if (this.boundCount >= need && !signal?.aborted) return;
+      if (signal?.aborted) {
+        await this.close();
+        throw new SmppAbortError(false, 'connect', { cause: signal.reason });
+      }
       const errors = (await first)
         .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
         .map((r) => toError(r.reason));
@@ -207,15 +217,15 @@ export class SmppPool extends EventEmitter<PoolEvents> {
     this.emitSafe('close');
   }
 
-  private async connectMember(index: number, attempt = 1): Promise<void> {
+  private async connectMember(index: number, attempt = 1, signal?: AbortSignal): Promise<void> {
     const member = this.members[index]!;
     try {
-      await member.connect();
+      await member.connect(signal ? { signal } : {});
     } catch (err) {
       const error = toError(err);
       this.logger.warn('pool member failed to connect', { member: index, attempt, error: error.message });
       this.emitSafe('memberDown', index, error);
-      this.scheduleRetry(index, attempt);
+      if (!signal?.aborted) this.scheduleRetry(index, attempt);
       throw error;
     }
   }
@@ -277,7 +287,11 @@ export class SmppPool extends EventEmitter<PoolEvents> {
     return this.withMember((m) => m.sendText(opts));
   }
 
-  query(messageId: string, params: Omit<PduParams<'query_sm'>, 'message_id'> = {}, options?: RequestOptions) {
+  query(
+    messageId: string,
+    params: Omit<PduParams<'query_sm'>, 'message_id'> = {},
+    options?: RequestOptions,
+  ): Promise<ResponseOf<'query_sm'>> {
     return this.request('query_sm', { ...params, message_id: messageId }, options);
   }
 
@@ -285,11 +299,15 @@ export class SmppPool extends EventEmitter<PoolEvents> {
     messageId: string,
     params: Omit<PduParams<'cancel_sm'>, 'message_id'> = {},
     options?: RequestOptions,
-  ) {
+  ): Promise<ResponseOf<'cancel_sm'>> {
     return this.request('cancel_sm', { ...params, message_id: messageId }, options);
   }
 
-  replace(messageId: string, params: Omit<PduParams<'replace_sm'>, 'message_id'>, options?: RequestOptions) {
+  replace(
+    messageId: string,
+    params: Omit<PduParams<'replace_sm'>, 'message_id'>,
+    options?: RequestOptions,
+  ): Promise<ResponseOf<'replace_sm'>> {
     return this.request('replace_sm', { ...params, message_id: messageId }, options);
   }
 

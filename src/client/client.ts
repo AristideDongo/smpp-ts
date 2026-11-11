@@ -319,24 +319,26 @@ export class SmppClient extends EventEmitter<ClientEvents> {
   /**
    * Connects and binds. Rejects if the first attempt fails;
    * automatic reconnection takes over after that if the connection drops.
+   * `signal` aborts the attempt (TCP/TLS connection or bind) with `SmppAbortError`.
    */
-  async connect(): Promise<void> {
+  async connect(options: { signal?: AbortSignal } = {}): Promise<void> {
     if (this.isBound) return;
     if (this.connecting) return this.connecting;
     this.closing = false;
-    this.connecting = this.establish().finally(() => {
+    this.connecting = this.establish(options.signal).finally(() => {
       this.connecting = undefined;
     });
     await this.connecting;
     this.everBound = true;
   }
 
-  private async establish(): Promise<void> {
+  private async establish(signal?: AbortSignal): Promise<void> {
     const o = this.options;
     const socket = await connectSocket(this.endpoint, {
       ...(o.connectTimeout !== undefined ? { connectTimeout: o.connectTimeout } : {}),
       ...(this.tlsOptions ? { tls: this.tlsOptions } : {}),
       logger: this.logger,
+      signal,
     });
     if (this.closing) {
       socket.destroy();
@@ -371,12 +373,20 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     session.on('close', (err) => this.onSessionClose(session, err));
 
     const { mode, ...bindParams } = o.bind;
+    const onAbort = () => session.destroy();
+    signal?.addEventListener('abort', onAbort, { once: true });
     try {
+      if (signal?.aborted) throw new SmppAbortError(false, 'connect', { cause: signal.reason });
       await session.bind(mode, { interface_version: 0x34, ...bindParams }, o.bindTimeout ?? 10_000);
     } catch (err) {
       session.destroy();
       await session.closedSignal;
+      if (signal?.aborted && !(err instanceof SmppAbortError)) {
+        throw new SmppAbortError(false, 'connect', { cause: signal.reason });
+      }
       throw err;
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
     }
     this.emitSafe('bound', o.bind.system_id);
   }
@@ -661,7 +671,11 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     };
   }
 
-  query(messageId: string, params: Omit<PduParams<'query_sm'>, 'message_id'> = {}, options?: RequestOptions) {
+  query(
+    messageId: string,
+    params: Omit<PduParams<'query_sm'>, 'message_id'> = {},
+    options?: RequestOptions,
+  ): Promise<ResponseOf<'query_sm'>> {
     return this.request('query_sm', { ...params, message_id: messageId }, options);
   }
 
@@ -669,11 +683,15 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     messageId: string,
     params: Omit<PduParams<'cancel_sm'>, 'message_id'> = {},
     options?: RequestOptions,
-  ) {
+  ): Promise<ResponseOf<'cancel_sm'>> {
     return this.request('cancel_sm', { ...params, message_id: messageId }, options);
   }
 
-  replace(messageId: string, params: Omit<PduParams<'replace_sm'>, 'message_id'>, options?: RequestOptions) {
+  replace(
+    messageId: string,
+    params: Omit<PduParams<'replace_sm'>, 'message_id'>,
+    options?: RequestOptions,
+  ): Promise<ResponseOf<'replace_sm'>> {
     return this.request('replace_sm', { ...params, message_id: messageId }, options);
   }
 

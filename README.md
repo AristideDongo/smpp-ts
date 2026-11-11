@@ -16,6 +16,8 @@ Node ≥ 20, Bun and Deno · ESM + CJS · `.d.ts` declarations included.
 
 ```sh
 npm install smpp-ts
+# Deno
+deno add jsr:@smpp-ts/smpp-ts
 ```
 
 ## Client
@@ -144,11 +146,12 @@ An `error` event without a listener does not end the process: it goes to the log
 
 While the socket write buffer is full, the session stops reading until the peer catches up (backpressure in both directions).
 
-Every request accepts an `AbortSignal`, and so does `sendText`:
+Every request accepts an `AbortSignal`, and so do `sendText` and `connect`:
 
 ```ts
 const ac = new AbortController();
 setTimeout(() => ac.abort(), 2_000);
+await client.connect({ signal: AbortSignal.timeout(5_000) });
 await client.sendText({ to, from, text, signal: ac.signal });
 await client.submit(params, { signal: ac.signal });
 ```
