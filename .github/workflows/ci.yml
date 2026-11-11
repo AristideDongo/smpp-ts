@@ -23,6 +23,8 @@ jobs:
       - run: npm audit --audit-level=moderate
       - run: npm run build
       - run: node dist/cli.js --version && node dist/cli.js --help > /dev/null
+      # Publishing to JSR must keep working (dry run, no token needed).
+      - run: npm run jsr:check
 
   test:
     runs-on: ubuntu-latest

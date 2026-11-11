@@ -142,7 +142,7 @@ export interface ServerEvents<Ctx> {
 
 /** SMPP server (SMSC / simulator). */
 export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
-  readonly sessions = new Set<ServerSession<Ctx>>();
+  readonly sessions: Set<ServerSession<Ctx>> = new Set();
   private readonly options: SmppServerOptions<Ctx>;
   private readonly logger: Logger;
   private readonly codec: PduCodec;
