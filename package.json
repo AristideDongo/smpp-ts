@@ -61,6 +61,7 @@
     "test:watch": "vitest",
     "test:runtime": "npm run build && node test/runtime/smoke.mjs",
     "test:interop": "vitest run --config vitest.interop.config.ts",
+    "test:jasmin": "JASMIN=1 vitest run --config vitest.interop.config.ts test/interop/jasmin",
     "coverage": "vitest run --coverage",
     "fuzz": "FUZZ_RUNS=1000000 vitest run test/fuzz --testTimeout=3600000",
     "prepublishOnly": "npm run typecheck && npm run test && npm run build",

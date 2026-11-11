@@ -161,6 +161,27 @@ jobs:
       - if: always() && (matrix.peer == 'smscsim' || matrix.peer == 'jsmpp')
         run: cat peer.log
 
+  jasmin:
+    name: interop (jasmin)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Jasmin + Redis + RabbitMQ; the upstream SMSC is played by the test on the runner (port 2776).
+      - run: docker compose -f test/interop/jasmin/docker-compose.yml up -d --wait
+      - run: npm run test:jasmin
+      - if: always()
+        run: |
+          docker compose -f test/interop/jasmin/docker-compose.yml logs jasmin | tail -n 200
+          docker compose -f test/interop/jasmin/docker-compose.yml exec -T jasmin sh -c 'tail -n 100 /var/log/jasmin/messages.log' || true
+      - if: always()
+        run: docker compose -f test/interop/jasmin/docker-compose.yml down -v
+
   bench:
     # Same runner for the base branch and the PR: absolute numbers vary between runners,
     # a relative comparison does not.

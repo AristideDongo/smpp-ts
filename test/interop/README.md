@@ -6,15 +6,15 @@ They are not part of `npm test`: without `SMPP_INTEROP_URL`, they are skipped.
 
 ## Compatibility matrix
 
-Run in CI on every pull request (`interop` job), against third-party implementations, not against the library itself:
-
-| Peer | Language | Role | What is tested | Status |
-|---|---|---|---|---|
-| [smscsim](https://github.com/ukarim/smscsim) | Go | SMSC (smpp-ts is the client) | `smsc.interop.ts`: bind, `enquire_link`, GSM7 / UCS2, long messages (`udh8`, `udh16`, `sar`), window, receipts | ✅ |
-| [jsmpp](https://github.com/opentelecoms-org/jsmpp) 3.0.2 | Java | SMSC (smpp-ts is the client) | same suite, against `servers/JsmppSmsc.java` | ✅ |
-| [python-smpplib](https://github.com/python-smpplib/python-smpplib) 2.2.4 | Python | client (smpp-ts is the server) | `server.interop.ts`: bind, short GSM7 and long UCS2 split by the peer, receipts, MO, unbind | ✅ |
-| [gosmpp](https://github.com/linxGnu/gosmpp) 0.3.1 | Go | client (smpp-ts is the server) | same scenario | ✅ |
-| Cloudhopper, Kannel, Jasmin | Java, C, Python | — | not covered yet | — |
+| Peer | Priority | Language | Role | What is tested | Status |
+|---|---|---|---|---|---|
+| [Jasmin](https://github.com/jookies/jasmin) 0.11.0 | 1, target integration | Python | real SMS gateway (smpp-ts is the client; Jasmin relays to an upstream SMSC played by smpp-ts) | binds, `submit_sm`, GSM7 / UCS2 / national tables, long messages, receipts, message id formats, MO, errors, throttling, network cuts: [jasmin/README.md](jasmin/README.md) | ✅ |
+| [smscsim](https://github.com/ukarim/smscsim) | automated tests | Go | SMSC simulator (smpp-ts is the client) | `smsc.interop.ts`: bind, `enquire_link`, GSM7 / UCS2, long messages (`udh8`, `udh16`, `sar`), window, receipts | ✅ |
+| [jsmpp](https://github.com/opentelecoms-org/jsmpp) 3.0.2 | interoperability | Java | SMSC (smpp-ts is the client) | same suite, against `servers/JsmppSmsc.java` | ✅ |
+| [python-smpplib](https://github.com/python-smpplib/python-smpplib) 2.2.4 | interoperability | Python | client (smpp-ts is the server) | `server.interop.ts`: bind, short GSM7 and long UCS2 split by the peer, receipts, MO, unbind | ✅ |
+| [gosmpp](https://github.com/linxGnu/gosmpp) 0.3.1 | interoperability | Go | client (smpp-ts is the server) | same scenario | ✅ |
+| [Kannel](https://www.kannel.org/) | complementary | C | client (smpp-ts would be the server) | — | not covered yet |
+| [@larvit/smpp](https://www.npmjs.com/package/@larvit/smpp) | comparative reference | TypeScript | — | feature comparison only ([docs/guides/comparison.md](../../docs/guides/comparison.md)); no test, to keep it out of the dependencies | — |
 
 ✅ = passes locally and in CI. The jsmpp jars are downloaded from Maven Central and checked against a SHA-256.
 
