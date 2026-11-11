@@ -1,5 +1,40 @@
 # smpp-ts
 
+## 0.5.0
+
+### Minor Changes
+
+- bcea670: Command line `smpp-ts` (`npx smpp-ts …`), with no dependency:
+
+  - `smpp-ts smsc`: SMSC simulator (credentials, receipts `delivered` / `undeliverable` / `random` / `none` with a delay, `--echo` MO, TLS). Listens on 127.0.0.1 by default.
+  - `smpp-ts send`: sends an SMS, prints the message ids, and with `--dlr` waits for the final receipt (exit code 0 if delivered). `--ca` trusts a self-signed certificate without disabling verification.
+
+- c06ab92: - `connect({ signal })` on `SmppClient` and `SmppPool`: aborts the TCP/TLS connection or the bind with `SmppAbortError`.
+  - Published on JSR as `@smpp-ts/smpp-ts` (`deno add jsr:@smpp-ts/smpp-ts`). `jsr.json` follows the npm version.
+  - Explicit return types on `query`, `cancel`, `replace`, `defaultCodec`, `encodings` and `SmppServer.sessions`.
+- 5df16f0: GSM7: every national language table of 3GPP TS 23.038 (Release 9+).
+
+  - 13 single shift tables (UDH IE 0x24): Turkish, Spanish, Portuguese, Bengali, Gujarati, Hindi, Kannada, Malayalam, Oriya, Punjabi, Tamil, Telugu, Urdu.
+  - 12 locking shift tables (UDH IE 0x25, all but Spanish): 1 septet per national character. A Hindi text goes in 152 characters per SMS instead of 70 in UCS2.
+  - Detection (`shiftTables`) tries the single shift table alone, then locking + single. `shift` / `locking` force them. Incoming messages announcing a locking table are decoded.
+  - New exports: `NATIONAL_LANGUAGES`, `NATIONAL_LANGUAGE_ID`, `hasLockingShift`, types `Gsm7Tables` / `Gsm7Shift`. `encodeGsm7` / `decodeGsm7` / `canEncodeGsm7` accept `{ single, locking }`; a plain language code keeps meaning the single shift table.
+
+- ffe678c: Pluggable storage interfaces (no storage shipped: the application implements them).
+
+  - `trackDeliveries: { store }`: a `DeliveryTrackerStore` (`save`, `delete`, `load`) receives every change of the tracked messages. A client reloads it before its first bind, so tracking survives a restart. `DeliveryTracker.restore()` for standalone use. Store errors are logged and tracking goes on in memory.
+  - `sequenceGenerator: { next() }`: source of `sequence_number` values.
+  - `concatReference: () => number`: source of long-message concatenation references (client and pool).
+
+- 54ffa30: `SmppPool`: several binds behind the `SmppClient` API.
+
+  - `size` identical binds, or `members` with per-bind options (another host, another `system_id`…).
+  - `least-busy` (default) or `round-robin` strategy; `minBound` binds required by `connect()`.
+  - Failover: sends go through the other binds while one reconnects. A send that was not written moves to another bind; a written one is never resent.
+  - Receipts (`messageStatus`) and multipart incoming messages work whatever bind they arrive on. Concatenation references are shared, so two binds never use the same one at the same time.
+  - Events `memberUp` and `memberDown`.
+
+  `InboundProcessor` (receipt and incoming message handling, reassembly) is exported for advanced use.
+
 ## 0.4.0
 
 ### Minor Changes
