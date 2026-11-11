@@ -1,8 +1,8 @@
 import { type StatusCategory, defaultStatusClassifier, statusName } from './protocol/status.js';
 
-/** Classe de base de toutes les erreurs de la lib. */
+/** Base class of every error thrown by the library. */
 export class SmppError extends Error {
-  /** Code machine stable, utilisable dans un `switch`. */
+  /** Stable machine-readable code, usable in a `switch`. */
   readonly code: string;
 
   constructor(code: string, message: string, options?: { cause?: unknown }) {
@@ -12,12 +12,12 @@ export class SmppError extends Error {
   }
 }
 
-/** Réponse reçue avec un command_status ≠ 0. */
+/** Response received with a non-zero command_status. */
 export class SmppStatusError extends SmppError {
   readonly status: number;
   readonly statusName: string;
   readonly category: StatusCategory;
-  /** Commande de la requête qui a échoué. */
+  /** Command of the request that failed. */
   readonly command: string;
 
   constructor(command: string, status: number, category: StatusCategory = defaultStatusClassifier(status)) {
@@ -39,11 +39,11 @@ export type TimeoutKind =
   | 'drain'
   | 'proxy_header';
 
-/** Timeout d'une opération (requête, bind, keepalive…). */
+/** An operation timed out (request, bind, keepalive…). */
 export class SmppTimeoutError extends SmppError {
   readonly kind: TimeoutKind;
   readonly timeoutMs: number;
-  /** Pour une requête : `true` si le PDU avait été écrit sur le socket. */
+  /** For a request: `true` if the PDU had been written to the socket. */
   readonly written: boolean;
 
   constructor(kind: TimeoutKind, timeoutMs: number, detail?: string, written = false) {
@@ -54,11 +54,11 @@ export class SmppTimeoutError extends SmppError {
   }
 }
 
-/** Connexion fermée alors qu'une requête était en attente. */
+/** The connection closed while a request was pending. */
 export class SmppConnectionClosedError extends SmppError {
   /**
-   * `true` : le PDU a été écrit sur le socket, le SMSC l'a peut-être accepté (risque de doublon en cas de renvoi).
-   * `false` : le PDU n'est jamais parti, il peut être renvoyé sans risque.
+   * `true`: the PDU was written to the socket and the SMSC may have accepted it (resending may duplicate it).
+   * `false`: the PDU never left and can be resent safely.
    */
   readonly written: boolean;
 
@@ -68,7 +68,7 @@ export class SmppConnectionClosedError extends SmppError {
   }
 }
 
-/** File d'envoi pleine (REL-03). */
+/** The send queue is full (REL-03). */
 export class SmppQueueFullError extends SmppError {
   readonly maxQueueSize: number;
   constructor(maxQueueSize: number) {
@@ -77,11 +77,11 @@ export class SmppQueueFullError extends SmppError {
   }
 }
 
-/** Opération interdite dans l'état courant de la session (REL-01, SEC-07). */
+/** Operation not allowed in the current session state (REL-01, SEC-07). */
 export class SmppStateError extends SmppError {
   readonly state: string;
   readonly operation: string;
-  /** Statut SMPP équivalent (ESME_RINVBNDSTS en général). */
+  /** Equivalent SMPP status (usually ESME_RINVBNDSTS). */
   readonly status: number;
 
   constructor(operation: string, state: string, status = 0x00000004, reason?: string) {
@@ -92,13 +92,13 @@ export class SmppStateError extends SmppError {
   }
 }
 
-/** PDU reçu invalide. */
+/** Invalid PDU received. */
 export class SmppDecodeError extends SmppError {
-  /** Statut SMPP à renvoyer au pair. */
+  /** SMPP status to send back to the peer. */
   readonly status: number;
-  /** En-tête lisible, si disponible (pour répondre avec le bon sequence_number). */
+  /** Readable header, if any (to answer with the right sequence_number). */
   readonly header?: { command_id: number; command_status: number; sequence_number: number } | undefined;
-  /** Le flux est désynchronisé : la session doit être fermée. */
+  /** The stream is out of sync: the session must be closed. */
   readonly fatal: boolean;
 
   constructor(
@@ -113,7 +113,7 @@ export class SmppDecodeError extends SmppError {
   }
 }
 
-/** Paramètre invalide détecté avant l'envoi : aucun PDU invalide n'est écrit sur le réseau (SEC-03). */
+/** Invalid parameter caught before sending: no invalid PDU is ever written to the network (SEC-03). */
 export class SmppValidationError extends SmppError {
   readonly field: string | undefined;
   readonly status: number;
@@ -125,9 +125,9 @@ export class SmppValidationError extends SmppError {
   }
 }
 
-/** Échec partiel d'un envoi multi-segments. */
+/** Partial failure of a multi-segment send. */
 export class SmppMultipartError extends SmppError {
-  /** Résultat par segment, dans l'ordre : message_id ou erreur. */
+  /** Result per segment, in order: message_id or error. */
   readonly results: ReadonlyArray<{ messageId: string } | { error: Error }>;
 
   constructor(results: ReadonlyArray<{ messageId: string } | { error: Error }>) {

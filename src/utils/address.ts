@@ -3,27 +3,27 @@ import { SmppValidationError } from '../errors.js';
 import { NPI, TON } from '../protocol/constants.js';
 import { COMMAND_STATUS } from '../protocol/status.js';
 
-/** Options de normalisation et de validation des adresses de `sendText`. */
+/** Normalization and validation options for `sendText` addresses. */
 export interface AddressOptions {
   /**
-   * Retire les séparateurs des numéros (espaces, tirets, points, parenthèses, barres obliques)
-   * et convertit le préfixe international (`00…`) en TON international. Défaut : `true`.
+   * Strips separators from numbers (spaces, dashes, dots, parentheses, slashes)
+   * and turns the international prefix (`00…`) into TON international. Default: `true`.
    */
   normalize?: boolean;
   /**
-   * Préfixe d'appel international à convertir en TON 1 (ex. `00` en Europe et en Afrique,
-   * `011` en Amérique du Nord). `false` pour désactiver. Défaut : `'00'`.
+   * International call prefix converted to TON 1 (e.g. `00` in Europe and Africa,
+   * `011` in North America). `false` to disable. Default: `'00'`.
    */
   internationalPrefix?: string | false;
   /**
-   * Longueur maximale d'un expéditeur alphanumérique. La norme GSM (3GPP TS 23.040) limite
-   * le champ TP-OA à 11 caractères : au-delà, les réseaux tronquent ou rejettent le message.
-   * Défaut : 11.
+   * Maximum length of an alphanumeric sender. The GSM standard (3GPP TS 23.040) limits
+   * the TP-OA field to 11 characters: beyond that, networks truncate or reject the message.
+   * Default: 11.
    */
   maxAlphanumericLength?: number;
   /**
-   * Valide l'expéditeur alphanumérique (longueur, caractères GSM 7 bits).
-   * `false` pour laisser passer une valeur hors norme acceptée par un opérateur. Défaut : `true`.
+   * Validates the alphanumeric sender (length, GSM 7-bit characters).
+   * `false` to let through an off-standard value an operator accepts. Default: `true`.
    */
   validateSender?: boolean;
 }
@@ -34,27 +34,27 @@ export interface ResolvedAddress {
   npi: number;
 }
 
-/** Longueur maximale d'un numéro E.164 (indicatif pays compris). */
+/** Maximum length of an E.164 number (country code included). */
 const E164_MAX_DIGITS = 15;
-/** En dessous, un numéro précédé de `00` est traité comme un code court, pas comme un numéro international. */
+/** Below this, a number starting with `00` is treated as a short code, not an international number. */
 const MIN_INTERNATIONAL_DIGITS = 7;
 const SEPARATORS = /[\s\-.()/]/g;
 
-/** Vrai si `addr` est un numéro (après retrait éventuel des séparateurs). */
+/** True when `addr` is a number (after optionally stripping separators). */
 export function isNumericAddress(addr: string, normalize = true): boolean {
   const s = normalize ? addr.trim().replace(SEPARATORS, '') : addr;
   return /^\+?\d+$/.test(s);
 }
 
 /**
- * Normalise une adresse et choisit TON/NPI quand ils ne sont pas fournis :
- * - vide → TON 0, NPI 0 (le SMSC applique son expéditeur par défaut) ;
- * - alphanumérique → TON 5 (alphanumeric), NPI 0 ;
- * - `+chiffres` ou `00chiffres` → TON 1 (international), NPI 1 (E.164), préfixe retiré ;
- * - chiffres → TON 0 (unknown), NPI 1.
+ * Normalizes an address and picks TON/NPI when they are not given:
+ * - empty → TON 0, NPI 0 (the SMSC applies its default sender);
+ * - alphanumeric → TON 5 (alphanumeric), NPI 0;
+ * - `+digits` or `00digits` → TON 1 (international), NPI 1 (E.164), prefix removed;
+ * - digits → TON 0 (unknown), NPI 1.
  *
- * Lève `SmppValidationError` pour une adresse qu'aucun réseau n'acceptera
- * (destination alphanumérique, expéditeur alphanumérique trop long, numéro international > 15 chiffres).
+ * Throws `SmppValidationError` for an address no network would accept
+ * (alphanumeric destination, alphanumeric sender too long, international number > 15 digits).
  */
 export function resolveAddress(
   raw: string,

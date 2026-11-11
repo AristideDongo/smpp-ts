@@ -1,7 +1,7 @@
 import { SmppValidationError } from '../errors.js';
 import { COMMAND_STATUS } from '../protocol/status.js';
 
-/** Écrivain à buffer extensible, avec validation stricte de chaque valeur (SEC-03). */
+/** Growable buffer writer, with strict validation of every value (SEC-03). */
 export class Writer {
   private buf: Buffer;
   private offset = 0;
@@ -54,13 +54,13 @@ export class Writer {
     this.offset += 4;
   }
 
-  /** Écrit une C-Octet String. `max` inclut l'octet nul. */
+  /** Writes a C-Octet String. `max` includes the null byte. */
   cstring(field: string, value: unknown, max: number): void {
     if (typeof value !== 'string') {
       throw new SmppValidationError(`Field ${field} must be a string`, field);
     }
     const bytes = Buffer.byteLength(value, 'latin1');
-    // Refuse les caractères hors Latin-1 (perte silencieuse) et les nuls internes (troncature).
+    // Reject characters outside Latin-1 (silent loss) and embedded nulls (truncation).
     if (/[^\x01-\xff]/.test(value)) {
       throw new SmppValidationError(`Field ${field} contains characters that cannot be encoded`, field);
     }
@@ -83,7 +83,7 @@ export class Writer {
     this.offset += value.length;
   }
 
-  /** Réserve `n` octets et renvoie leur position (pour écrire une longueur après coup). */
+  /** Reserves `n` bytes and returns their offset (to write a length afterwards). */
   reserve(n: number): number {
     this.ensure(n);
     const at = this.offset;

@@ -45,7 +45,7 @@ describe('Framer (REL-08)', () => {
     const bad = Buffer.alloc(4);
     bad.writeUInt32BE(5000, 0);
     expect(f.push(bad).error?.message).toMatch(/exceeds maxPduLength/);
-    // Une fois désynchronisé, le framer reste en erreur.
+    // Once out of sync, the framer stays in error.
     expect(f.push(pdus[0]!).error).toBeDefined();
     f.reset();
     expect(f.push(pdus[0]!).frames).toHaveLength(1);

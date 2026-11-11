@@ -30,10 +30,10 @@ export interface AuthContext {
   mode: BindMode;
 }
 
-/** `true`/objet de contexte : accepté. `false` : refusé (ESME_RBINDFAIL, sans distinction de cause). */
+/** `true` or a context object: accepted. `false`: refused (ESME_RBINDFAIL, whatever the reason). */
 export type Authenticate<Ctx> = (ctx: AuthContext) => Promise<boolean | Ctx> | boolean | Ctx;
 
-/** Commandes entrantes qu'un handler peut traiter. */
+/** Incoming commands a handler can process. */
 export type HandledCommand = Exclude<
   RequestCommandName,
   | 'bind_transmitter'
@@ -51,14 +51,14 @@ type RespParams<C extends HandledCommand> = `${C}_resp` extends ResponseCommandN
   : never;
 
 /**
- * Valeur renvoyée par un handler :
- * - rien → réponse avec statut 0 ;
- * - un nombre → command_status ;
- * - un objet → champs de la réponse (et éventuellement command_status).
- * Une exception portant `status` (ex. `SmppStatusError`) donne ce statut ; toute autre → ESME_RSYSERR.
+ * Value returned by a handler:
+ * - nothing → response with status 0;
+ * - a number → command_status;
+ * - an object → response fields (and optionally command_status).
+ * An exception carrying `status` (e.g. `SmppStatusError`) gives that status; anything else → ESME_RSYSERR.
  */
 export type HandlerResult<C extends HandledCommand> =
-  // biome-ignore lint/suspicious/noConfusingVoidType: un handler peut ne rien renvoyer
+  // biome-ignore lint/suspicious/noConfusingVoidType: a handler may return nothing
   void | number | (RespParams<C> & { command_status?: number });
 
 export type Handler<C extends HandledCommand, Ctx> = (
@@ -69,32 +69,32 @@ export type Handler<C extends HandledCommand, Ctx> = (
 export type Handlers<Ctx> = { [C in HandledCommand]?: Handler<C, Ctx> };
 
 export interface SmppServerOptions<Ctx = unknown> {
-  /** Hook d'authentification (obligatoire : sans lui, aucun bind n'est possible). */
+  /** Authentication hook (required: without it, no bind can succeed). */
   authenticate: Authenticate<Ctx>;
   handlers?: Handlers<Ctx>;
-  /** Options TLS : leur présence active TLS. */
+  /** TLS options: providing them enables TLS. */
   tls?: tls.TlsOptions;
-  /** system_id renvoyé dans bind_resp. Défaut : `smpp-ts`. */
+  /** system_id returned in bind_resp. Default: `smpp-ts`. */
   systemId?: string;
 
-  /** Session ouverte mais non bindée fermée après ce délai. Défaut : 30 s. */
+  /** An open but unbound session is closed after this delay. Default: 30 s. */
   bindTimeout?: number;
-  /** Session bindée sans trafic fermée après ce délai. Défaut : 5 min. 0 = désactivé. */
+  /** A bound session without traffic is closed after this delay. Default: 5 min. 0 = disabled. */
   idleTimeout?: number;
-  /** Délai max d'un handler avant réponse ESME_RSYSERR automatique. Défaut : 10 s. */
+  /** Maximum handler time before an automatic ESME_RSYSERR response. Default: 10 s. */
   handlerTimeout?: number;
   maxSessions?: number;
   maxSessionsPerIp?: number;
   maxSessionsPerSystemId?: number;
   bindFailures?: BindFailurePolicy;
 
-  /** Proxy Protocol v1/v2. Désactivé par défaut. */
+  /** Proxy Protocol v1/v2. Disabled by default. */
   proxyProtocol?: ProxyProtocolOptions;
 
   window?: number;
   maxQueueSize?: number;
   requestTimeout?: number;
-  /** Envoi d'enquire_link par le serveur. Défaut : 0 (désactivé, le client s'en charge). */
+  /** Server-initiated enquire_link. Default: 0 (disabled, the client takes care of it). */
   enquireLinkInterval?: number;
   enquireLinkTimeout?: number;
   unbindTimeout?: number;
@@ -115,7 +115,7 @@ export interface ServerEvents<Ctx> {
   metric: [metric: Metric, session: ServerSession<Ctx>];
 }
 
-/** Serveur SMPP (SMSC / simulateur). */
+/** SMPP server (SMSC / simulator). */
 export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
   readonly sessions = new Set<ServerSession<Ctx>>();
   private readonly options: SmppServerOptions<Ctx>;
@@ -159,7 +159,7 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     );
   }
 
-  /** Démarre l'écoute. */
+  /** Starts listening. */
   listen(port = 2775, host?: string): Promise<net.AddressInfo> {
     return new Promise((resolve, reject) => {
       const onError = (err: Error) => reject(err);
@@ -182,19 +182,19 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     return (this.server.address() as net.AddressInfo | null) ?? undefined;
   }
 
-  /** Arrête l'écoute et ferme proprement toutes les sessions (unbind). */
+  /** Stops listening and closes every session cleanly (unbind). */
   async close(): Promise<void> {
     const closed = new Promise<void>((resolve) => this.server.close(() => resolve()));
     await Promise.allSettled([...this.sessions].map((s) => s.close()));
     await closed;
   }
 
-  /** Sessions bindées pour un system_id. */
+  /** Bound sessions for a system_id. */
   sessionsFor(systemId: string): ServerSession<Ctx>[] {
     return [...this.sessions].filter((s) => s.systemId === systemId && s.mode !== undefined);
   }
 
-  /** Envoie un deliver_sm à une session receiver/transceiver du system_id (tourniquet). */
+  /** Sends a deliver_sm to a receiver/transceiver session of the system_id (round robin). */
   deliver(
     systemId: string,
     params: PduParams<'deliver_sm'>,
@@ -215,7 +215,7 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     return target.deliver(params, options);
   }
 
-  // ---------------------------------------------------------------- connexions
+  // ---------------------------------------------------------------- connections
 
   private reject(socket: net.Socket, ip: string, reason: string): void {
     this.logger.warn('connection rejected', { remoteAddress: ip, reason });
@@ -231,7 +231,7 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
   }
 
   private async onConnection(socket: net.Socket): Promise<void> {
-    socket.on('error', () => {}); // les erreurs sont gérées par la session ou la destruction
+    socket.on('error', () => {}); // errors are handled by the session or by destroy()
     let ip = normalizeIp(socket.remoteAddress ?? 'unknown');
     const early = this.admissible(ip);
     if (early) return this.reject(socket, ip, early);
@@ -246,7 +246,7 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
           const late = this.admissible(ip);
           if (late) return this.reject(socket, ip, late);
         }
-        // Les octets suivant l'en-tête ont été remis dans le flux : TLS doit lire via un flux JS.
+        // The bytes after the header were pushed back into the stream: TLS must read through a JS stream.
         if (this.secureContext) stream = Duplex.from({ readable: socket, writable: socket });
       } else if (!this.secureContext) {
         await rejectSpoofedProxyHeader(socket, timeout);
@@ -302,7 +302,7 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     this.sessions.add(ss);
     this.perIp.set(ip, (this.perIp.get(ip) ?? 0) + 1);
 
-    // SEC-05 : une session non bindée est fermée après bindTimeout.
+    // SEC-05: an unbound session is closed after bindTimeout.
     const bindTimer = setTimeout(() => {
       if (ss.mode === undefined) {
         this.logger.warn('bind timeout, closing session', { remoteAddress: ip });
@@ -331,7 +331,7 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     stream.resume();
   }
 
-  // ---------------------------------------------------------------- PDU entrants
+  // ---------------------------------------------------------------- incoming PDUs
 
   private async onPdu(ss: ServerSession<Ctx>, pdu: Pdu): Promise<void> {
     const mode = bindModeOf(pdu.command);
@@ -340,7 +340,7 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     const command = pdu.command as HandledCommand;
     const handler = this.handlers[command] as Handler<HandledCommand, Ctx> | undefined;
     if (!responseNameOf(pdu.command)) {
-      // Pas de réponse attendue : on notifie le handler éventuel.
+      // No response expected: notify the handler, if any.
       if (handler) await Promise.resolve(handler(pdu as never, ss)).catch(() => {});
       return;
     }
@@ -379,7 +379,7 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
   ): Promise<void> {
     const session = ss.session;
     const ip = ss.remoteAddress;
-    session.pause(); // ordre préservé pendant l'authentification asynchrone (REL-09)
+    session.pause(); // keeps ordering during asynchronous authentication (REL-09)
     let accepted: boolean | Ctx = false;
     try {
       const perSystem = this.options.maxSessionsPerSystemId ?? 10;
@@ -411,7 +411,7 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
 
     if (session.isClosed) return;
     if (accepted === false || accepted === null || accepted === undefined) {
-      // Même réponse que le system_id existe ou non (SEC-06).
+      // Same response whether the system_id exists or not (SEC-06).
       const banned = this.failures.recordFailure(ip);
       this.logger.warn('bind rejected', { systemId: pdu.system_id, remoteAddress: ip, banned });
       this.emitSafe('bindFailed', { remoteAddress: ip, system_id: pdu.system_id, banned });
@@ -433,7 +433,7 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     this.emitSafe('bind', ss);
   }
 
-  // ---------------------------------------------------------------- utilitaires
+  // ---------------------------------------------------------------- helpers
 
   private emitSafe<K extends keyof ServerEvents<Ctx>>(event: K, ...args: ServerEvents<Ctx>[K]): void {
     try {

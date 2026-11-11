@@ -1,7 +1,7 @@
 import { COMMANDS } from './protocol/commands.js';
 import { TLVS } from './protocol/tlv.js';
 
-/** Interface de logger injectable, compatible pino et console. */
+/** Injectable logger interface, compatible with pino and console. */
 export interface Logger {
   debug(msg: string, meta?: Record<string, unknown>): void;
   info(msg: string, meta?: Record<string, unknown>): void;
@@ -11,12 +11,12 @@ export interface Logger {
 
 const noop = () => {};
 
-/** Logger silencieux (défaut). */
+/** Silent logger (default). */
 export const silentLogger: Logger = { debug: noop, info: noop, warn: noop, error: noop };
 
 /**
- * Adapte un logger « à la pino » (`logger.info(meta, msg)`) ou console (`console.info(msg, meta)`).
- * Pour console, passer directement `console` : la signature (msg, meta) est compatible.
+ * Adapts a pino-style logger (`logger.info(meta, msg)`) or console (`console.info(msg, meta)`).
+ * For console, pass `console` directly: its (msg, meta) signature is compatible.
  */
 export function pinoAdapter(pino: {
   debug(obj: object, msg: string): void;
@@ -33,9 +33,9 @@ export function pinoAdapter(pino: {
 }
 
 export interface RedactOptions {
-  /** Masque `short_message` et `message_payload` (données personnelles). Défaut : false. */
+  /** Masks `short_message` and `message_payload` (personal data). Default: false. */
   redactContent?: boolean;
-  /** Masque partiellement les numéros (`source_addr`, `destination_addr`…). Défaut : false. */
+  /** Partially masks numbers (`source_addr`, `destination_addr`…). Default: false. */
   redactNumbers?: boolean;
 }
 
@@ -63,7 +63,7 @@ for (const [name, def] of Object.entries(TLVS) as [string, { content?: boolean; 
 }
 NUMBER_FIELDS.add('callback_num');
 
-/** Masque partiellement un numéro : conserve 4 premiers et 2 derniers caractères. */
+/** Partially masks a number: keeps the first 4 and last 2 characters. */
 export function maskNumber(value: string): string {
   if (value.length <= 6) return '*'.repeat(value.length);
   return value.slice(0, 4) + '*'.repeat(value.length - 6) + value.slice(-2);
@@ -90,14 +90,14 @@ function redactObject(obj: Record<string, unknown>, opts: RedactOptions): Record
 }
 
 /**
- * Copie d'un PDU (ou de paramètres) prête à journaliser :
- * secrets toujours masqués, contenu et numéros selon les options (SEC-02).
+ * Copy of a PDU (or of parameters) ready to log:
+ * secrets are always masked, content and numbers depending on options (SEC-02).
  */
 export function redactPdu(pdu: object, opts: RedactOptions = {}): Record<string, unknown> {
   return redactObject(pdu as Record<string, unknown>, opts);
 }
 
-/** Vrai si le champ est déclaré sensible dans la table du protocole. */
+/** True when the field is declared sensitive in the protocol table. */
 export function isSensitiveField(name: string): boolean {
   return SENSITIVE_FIELDS.has(name);
 }

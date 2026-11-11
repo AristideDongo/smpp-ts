@@ -12,28 +12,28 @@ export type DlrStatus =
   | 'ENROUTE'
   | 'SKIPPED';
 
-/** Champs extraits du texte d'un accusé (format « id:… sub:… dlvrd:… … »). */
+/** Fields extracted from a receipt text ("id:… sub:… dlvrd:… …" format). */
 export interface ParsedDlrText {
   id?: string;
   sub?: string;
   dlvrd?: string;
   submitDate?: Date;
   doneDate?: Date;
-  /** Statut brut (ex. `DELIVRD`). */
+  /** Raw status (e.g. `DELIVRD`). */
   stat?: string;
   err?: string;
   text?: string;
-  /** Tous les couples clé/valeur trouvés, clés en minuscules. */
+  /** Every key/value pair found, keys lowercased. */
   fields: Record<string, string>;
 }
 
 export interface DeliveryReport {
-  /** Identifiant du message, normalisé selon `messageIdFormat`. */
+  /** Message identifier, normalized according to `messageIdFormat`. */
   messageId: string;
-  /** Identifiant tel que reçu. */
+  /** Identifier as received. */
   rawMessageId: string;
   status: DlrStatus;
-  /** Statut brut (texte `stat:` ou valeur TLV message_state). */
+  /** Raw status (`stat:` text or message_state TLV value). */
   rawStatus: string;
   errorCode?: string;
   networkError?: NetworkErrorCode;
@@ -76,15 +76,15 @@ const STATE_BY_VALUE: Record<number, DlrStatus> = {
   [MESSAGE_STATE.SKIPPED]: 'SKIPPED',
 };
 
-/** Normalise un statut texte (`DELIVRD`, `undeliv`…) ou une valeur message_state. */
+/** Normalizes a text status (`DELIVRD`, `undeliv`…) or a message_state value. */
 export function normalizeDlrStatus(raw: string | number): DlrStatus {
   if (typeof raw === 'number') return STATE_BY_VALUE[raw] ?? 'UNKNOWN';
   return STATUS_ALIASES[raw.trim().toUpperCase()] ?? 'UNKNOWN';
 }
 
 /**
- * Date d'accusé `YYMMDDhhmm[ss]`. Le fuseau n'étant pas transmis, la date est interprétée en UTC.
- * Renvoie `undefined` si le format est invalide.
+ * Receipt date `YYMMDDhhmm[ss]`. The time zone is not transmitted, so the date is read as UTC.
+ * Returns `undefined` for an invalid format.
  */
 export function parseDlrDate(value: string): Date | undefined {
   const m = /^(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})?$/.exec(value.trim());
@@ -96,13 +96,13 @@ export function parseDlrDate(value: string): Date | undefined {
   return Number.isNaN(d.getTime()) || d.getUTCMonth() !== Number(mo) - 1 ? undefined : d;
 }
 
-// Clés reconnues, y compris les variantes rencontrées chez les opérateurs.
+// Recognized keys, including variants seen at operators.
 const KEY_PATTERN = /(id|sub|dlvrd|submit[ _]?date|done[ _]?date|stat|err|text)\s*:/gi;
 
-/** Analyse le texte d'un accusé de réception. Tolérant aux variantes (casse, espaces, ordre, clés manquantes). */
+/** Parses a delivery receipt text. Tolerates variants (case, spacing, order, missing keys). */
 export function parseDlr(text: string): ParsedDlrText | undefined {
   const matches = [...text.matchAll(KEY_PATTERN)].filter((m) => {
-    // Une clé doit être en début de texte ou précédée d'un espace (évite « text:…id:… » imbriqué).
+    // A key must start the text or follow a separator (avoids a nested "text:…id:…").
     const before = m.index === 0 ? ' ' : text[m.index - 1];
     return before === ' ' || before === '\t' || before === '\n' || before === ',' || before === ';';
   });
@@ -114,7 +114,7 @@ export function parseDlr(text: string): ParsedDlrText | undefined {
     const key = m[1]!.toLowerCase().replace(/[ _]/g, '');
     if (key in fields) continue;
     const start = m.index + m[0].length;
-    // `text:` prend tout le reste ; les autres s'arrêtent à la clé suivante.
+    // `text:` takes the rest; other keys stop at the next key.
     const next = key === 'text' ? undefined : matches[i + 1];
     const end = next ? next.index : text.length;
     fields[key] = text.slice(start, end).trim().replace(/[,;]$/, '');
@@ -139,8 +139,8 @@ export function parseDlr(text: string): ParsedDlrText | undefined {
 export type MessageIdFormat = 'as-is' | 'hex-to-dec' | 'dec-to-hex';
 
 /**
- * Normalise un message_id : certains SMSC renvoient l'ID en hexadécimal dans le DLR
- * et en décimal dans submit_sm_resp (ou l'inverse).
+ * Normalizes a message_id: some SMSCs return the ID in hexadecimal in the DLR
+ * and in decimal in submit_sm_resp (or the other way around).
  */
 export function normalizeMessageId(id: string, format: MessageIdFormat = 'as-is'): string {
   const trimmed = id.trim();
@@ -148,7 +148,7 @@ export function normalizeMessageId(id: string, format: MessageIdFormat = 'as-is'
     if (format === 'hex-to-dec' && /^[0-9a-f]+$/i.test(trimmed)) return BigInt(`0x${trimmed}`).toString(10);
     if (format === 'dec-to-hex' && /^\d+$/.test(trimmed)) return BigInt(trimmed).toString(16);
   } catch {
-    // valeur hors norme : renvoyée telle quelle
+    // out-of-range value: returned as is
   }
   return trimmed;
 }
@@ -162,7 +162,7 @@ export interface DlrPduLike {
   network_error_code?: NetworkErrorCode;
 }
 
-/** Vrai si un deliver_sm / data_sm est un accusé de réception. */
+/** True when a deliver_sm / data_sm is a delivery receipt. */
 export function isDeliveryReceipt(pdu: { esm_class: number; receipted_message_id?: string }): boolean {
   const type = pdu.esm_class & ESM_CLASS.TYPE_MASK;
   return (
@@ -173,8 +173,8 @@ export function isDeliveryReceipt(pdu: { esm_class: number; receipted_message_id
 }
 
 /**
- * Construit un accusé normalisé. Les TLV `receipted_message_id`, `message_state`
- * et `network_error_code` priment sur le texte quand ils sont présents.
+ * Builds a normalized receipt. The `receipted_message_id`, `message_state`
+ * and `network_error_code` TLVs take precedence over the text when present.
  */
 export function buildDeliveryReport(
   pdu: DlrPduLike,
@@ -231,7 +231,7 @@ const STATE_VALUE: Record<DlrStatus, number> = {
   SKIPPED: MESSAGE_STATE.SKIPPED,
 };
 
-/** Valeur message_state correspondant à un statut normalisé. */
+/** message_state value matching a normalized status. */
 export function dlrStatusToMessageState(status: DlrStatus): number {
   return STATE_VALUE[status];
 }
@@ -249,11 +249,11 @@ export interface FormatDlrOptions {
   err?: string;
   submitted?: number;
   delivered?: number;
-  /** Début du texte original (20 caractères max). */
+  /** Start of the original text (20 characters max). */
   text?: string;
 }
 
-/** Produit le texte d'accusé au format courant (côté serveur / simulateur). */
+/** Produces receipt text in the common format (server / simulator side). */
 export function formatDlr(o: FormatDlrOptions): string {
   const now = new Date();
   const sub = String(o.submitted ?? 1).padStart(3, '0');

@@ -42,21 +42,21 @@ import {
 } from './state-machine.js';
 import { type PendingRequest, RequestQueue, createPendingRequest, expireRequest } from './window.js';
 
-/** Réponse attendue pour une requête `C`. */
+/** Expected response for a request `C`. */
 export type ResponseOf<C extends CommandName> = `${C}_resp` extends ResponseCommandName
   ? PduOf<`${C}_resp`>
   : never;
 
 export interface SessionTimeouts {
-  /** Timeout de chaque requête (file + attente de réponse). Défaut : 10 s. */
+  /** Timeout of each request (queue time + response wait). Default: 10 s. */
   requestTimeout?: number;
-  /** Envoi d'un enquire_link après cette période sans trafic reçu. 0 = désactivé. Défaut : 30 s. */
+  /** Sends an enquire_link after this period without incoming traffic. 0 = disabled. Default: 30 s. */
   enquireLinkInterval?: number;
-  /** Délai de réponse à un enquire_link avant de déclarer la session morte. Défaut : 10 s. */
+  /** Time to wait for an enquire_link response before declaring the session dead. Default: 10 s. */
   enquireLinkTimeout?: number;
-  /** Attente de unbind_resp avant fermeture forcée. Défaut : 5 s. */
+  /** Time to wait for unbind_resp before forcing the socket closed. Default: 5 s. */
   unbindTimeout?: number;
-  /** Fermeture d'une session bindée sans aucun trafic reçu. 0 = désactivé. Défaut : 0. */
+  /** Closes a bound session that receives no traffic. 0 = disabled. Default: 0. */
   idleTimeout?: number;
 }
 
@@ -65,27 +65,27 @@ export interface SessionOptions extends SessionTimeouts {
   codec?: PduCodec;
   logger?: Logger;
   redact?: RedactOptions;
-  /** Nombre maximal de requêtes en vol (REL-03). Défaut : 10. */
+  /** Maximum number of in-flight requests (REL-03). Default: 10. */
   window?: number;
-  /** File partagée (client : survit aux reconnexions). Sinon une file propre est créée. */
+  /** Shared queue (client: survives reconnections). Otherwise the session creates its own. */
   queue?: RequestQueue;
-  /** Taille de la file propre. Défaut : 10 000. */
+  /** Size of the session's own queue. Default: 10 000. */
   maxQueueSize?: number;
   rateLimiter?: TokenBucket;
   classifyStatus?: StatusClassifier;
-  /** Identifiant de session pour les logs. */
+  /** Session identifier used in logs. */
   id?: string;
-  /** Contexte ajouté à chaque log. */
+  /** Context added to every log entry. */
   logContext?: Record<string, unknown>;
 }
 
 export interface RequestOptions {
-  /** Timeout propre à cette requête. */
+  /** Timeout for this request only. */
   timeout?: number;
 }
 
 export interface SessionEvents {
-  /** Requête entrante non traitée automatiquement : le propriétaire doit y répondre. */
+  /** Incoming request not handled automatically: the owner must answer it. */
   pdu: [pdu: Pdu];
   stateChange: [from: SessionState, to: SessionState];
   close: [error: Error | undefined];
@@ -93,7 +93,7 @@ export interface SessionEvents {
   metric: [metric: Metric];
 }
 
-/** Commandes qui ne consomment ni place dans la fenêtre ni jeton de débit. */
+/** Commands that use neither a window slot nor a rate-limit token. */
 const CONTROL_COMMANDS = new Set<CommandName>([
   'bind_transmitter',
   'bind_receiver',
@@ -107,9 +107,9 @@ const CONTROL_COMMANDS = new Set<CommandName>([
 let sessionCounter = 0;
 
 /**
- * Session SMPP sur un flux (socket TCP/TLS), commune au client et au serveur.
- * Gère : machine à états, découpage du flux, timeouts, fenêtre, file bornée, keepalive,
- * contre-pression et réponses automatiques (enquire_link, unbind, PDU invalides).
+ * SMPP session over a stream (TCP/TLS socket), shared by client and server.
+ * Handles the state machine, stream framing, timeouts, window, bounded queue, keepalive,
+ * backpressure and automatic responses (enquire_link, unbind, invalid PDUs).
  */
 export class Session extends EventEmitter<SessionEvents> {
   readonly id: string;
@@ -117,9 +117,9 @@ export class Session extends EventEmitter<SessionEvents> {
   readonly codec: PduCodec;
   readonly logger: Logger;
   readonly queue: RequestQueue;
-  /** Contexte libre (ex. résultat de l'authentification côté serveur). */
+  /** Free-form context (e.g. the server-side authentication result). */
   context: unknown;
-  /** system_id du pair, une fois bindé. */
+  /** Peer system_id, once bound. */
   systemId: string | undefined;
 
   private readonly ownsQueue: boolean;
@@ -195,7 +195,7 @@ export class Session extends EventEmitter<SessionEvents> {
       this.log('warn', 'socket error', { error: err.message });
     });
     socket.on('close', () => this.onClose());
-    // Fin de flux côté pair : on termine proprement notre côté.
+    // The peer ended its side of the stream: end ours cleanly.
     socket.on('end', () => {
       if (!socket.destroyed) socket.end();
     });
@@ -203,7 +203,7 @@ export class Session extends EventEmitter<SessionEvents> {
     this.scheduleKeepalive();
   }
 
-  // ---------------------------------------------------------------- accès
+  // ---------------------------------------------------------------- accessors
 
   get state(): SessionState {
     return this.machine.state;
@@ -217,22 +217,22 @@ export class Session extends EventEmitter<SessionEvents> {
     return this.socket.remoteAddress;
   }
 
-  /** Requêtes en vol (hors contrôle). */
+  /** In-flight requests (control commands excluded). */
   get inflightCount(): number {
     return this.windowUsed;
   }
 
-  /** Promise résolue à la fermeture du socket. */
+  /** Resolves when the socket is closed. */
   get closedSignal(): Promise<void> {
     return this.closedPromise;
   }
 
-  // ---------------------------------------------------------------- envoi
+  // ---------------------------------------------------------------- sending
 
   /**
-   * Envoie une requête et attend sa réponse.
-   * Rejette avec : `SmppStatusError`, `SmppTimeoutError`, `SmppConnectionClosedError`,
-   * `SmppQueueFullError`, `SmppStateError` ou `SmppValidationError`. Jamais d'attente infinie.
+   * Sends a request and waits for its response.
+   * Rejects with `SmppStatusError`, `SmppTimeoutError`, `SmppConnectionClosedError`,
+   * `SmppQueueFullError`, `SmppStateError` or `SmppValidationError`. Never waits forever.
    */
   request<C extends RequestCommandName>(
     command: C,
@@ -270,7 +270,7 @@ export class Session extends EventEmitter<SessionEvents> {
     }
   }
 
-  /** Envoie une requête sans réponse (alert_notification, outbind). */
+  /** Sends a request that has no response (alert_notification, outbind). */
   send<C extends 'alert_notification' | 'outbind'>(
     command: C,
     params: PduParams<C> = {} as PduParams<C>,
@@ -281,7 +281,7 @@ export class Session extends EventEmitter<SessionEvents> {
     this.write(this.encode(command, params, this.nextSequence()), command);
   }
 
-  /** Répond à une requête reçue. `command_status` ≠ 0 pour une erreur. */
+  /** Answers a received request. Non-zero `command_status` for an error. */
   respond<C extends RequestCommandName>(
     request: { command: C; sequence_number: number },
     params: PduParams<ResponseCommandName> & { command_status?: number } = {},
@@ -292,7 +292,7 @@ export class Session extends EventEmitter<SessionEvents> {
     }
     if (this.closed) return;
     const { command_status = 0, ...rest } = params;
-    // Une réponse d'erreur peut omettre le corps (et le doit pour certains SMSC).
+    // An error response may omit the body (and must, for some SMSCs).
     const body = command_status !== 0 ? {} : rest;
     const buf = this.codec.encode({
       command: respName,
@@ -303,7 +303,6 @@ export class Session extends EventEmitter<SessionEvents> {
     this.write(buf, respName, command_status);
   }
 
-  /** Envoie un generic_nack. */
   nack(sequenceNumber: number, status: number): void {
     if (this.closed) return;
     const buf = this.codec.encode({
@@ -316,7 +315,7 @@ export class Session extends EventEmitter<SessionEvents> {
 
   // ---------------------------------------------------------------- bind / unbind / close
 
-  /** Côté client : envoie le bind et passe dans l'état correspondant si le SMSC accepte. */
+  /** Client side: sends the bind and enters the matching state if the SMSC accepts it. */
   async bind(
     mode: BindMode,
     params: PduParams<'bind_transceiver'>,
@@ -335,7 +334,7 @@ export class Session extends EventEmitter<SessionEvents> {
     return resp;
   }
 
-  /** Passe la session dans l'état bindé (serveur : après authentification). */
+  /** Enters the bound state (server: after authentication). */
   markBound(mode: BindMode, systemId?: string): void {
     this.machine.transition(BOUND_STATE[mode]);
     if (systemId !== undefined) {
@@ -347,7 +346,7 @@ export class Session extends EventEmitter<SessionEvents> {
     this.dispatch();
   }
 
-  /** Envoie unbind et attend unbind_resp (avec timeout). N'échoue jamais. */
+  /** Sends unbind and waits for unbind_resp (with a timeout). Never throws. */
   async unbind(): Promise<void> {
     if (!isBound(this.state)) return;
     const encoded = this.encode('unbind', {}, 0);
@@ -360,7 +359,7 @@ export class Session extends EventEmitter<SessionEvents> {
     }
   }
 
-  /** Fermeture propre : unbind si bindé, puis fermeture du socket. */
+  /** Graceful close: unbind if bound, then close the socket. */
   async close(): Promise<void> {
     if (this.closed) return this.closedPromise;
     await this.unbind();
@@ -368,13 +367,13 @@ export class Session extends EventEmitter<SessionEvents> {
     return this.closedPromise;
   }
 
-  /** Fermeture immédiate. */
+  /** Immediate close. */
   destroy(error?: Error): void {
     if (error) this.closeError ??= error;
     this.socket.destroy();
   }
 
-  /** Suspend le traitement des PDU entrants (REL-09). */
+  /** Suspends processing of incoming PDUs (REL-09). */
   pause(): void {
     this.paused = true;
     this.socket.pause();
@@ -395,7 +394,7 @@ export class Session extends EventEmitter<SessionEvents> {
     if (!this.paused) this.socket.resume();
   }
 
-  // ---------------------------------------------------------------- interne : envoi
+  // ---------------------------------------------------------------- internal: sending
 
   private encode(command: CommandName, params: object, sequence: number): Buffer {
     return this.codec.encode({ ...params, command, sequence_number: sequence } as never);
@@ -425,7 +424,7 @@ export class Session extends EventEmitter<SessionEvents> {
     });
     this.writeRequest(request);
     if (kind === 'request') return promise;
-    // Requalifie le timeout en timeout de bind/unbind.
+    // Report the timeout as a bind/unbind timeout.
     return promise.catch((err: unknown) => {
       if (err instanceof SmppTimeoutError)
         throw new SmppTimeoutError(kind, err.timeoutMs, command, err.written);
@@ -452,14 +451,14 @@ export class Session extends EventEmitter<SessionEvents> {
     if (!req.control) this.emitMetric({ name: 'request.inflight', type: 'gauge', value: this.windowUsed });
   }
 
-  /** Remplit la fenêtre depuis la file, en respectant l'état, la contre-pression et le débit. */
+  /** Fills the window from the queue, honouring state, backpressure and rate limit. */
   dispatch(): void {
     if (this.closed || this.writeBlocked || !isBound(this.state)) return;
     while (this.windowUsed < this.window) {
       const req = this.queue.peek();
       if (!req) break;
-      // Échéance (presque) atteinte : ne jamais écrire un PDU qu'on abandonnerait aussitôt (risque de doublon).
-      // Marge : 10 % du timeout, 50 ms au plus.
+      // Deadline (almost) reached: never write a PDU we would abandon right away (duplicate risk).
+      // Margin: 10% of the timeout, at most 50 ms.
       if (req.deadline - Date.now() <= Math.min(50, req.timeoutMs / 10)) {
         this.queue.shift();
         expireRequest(req);
@@ -519,7 +518,7 @@ export class Session extends EventEmitter<SessionEvents> {
     this.dispatch();
   }
 
-  // ---------------------------------------------------------------- interne : réception
+  // ---------------------------------------------------------------- internal: receiving
 
   private onData(chunk: Buffer): void {
     this.lastReceived = Date.now();
@@ -530,7 +529,7 @@ export class Session extends EventEmitter<SessionEvents> {
       else this.handleFrame(frame);
     }
     if (error) {
-      // Flux désynchronisé : impossible de retrouver la frontière du PDU suivant (BUG-08).
+      // Stream out of sync: the next PDU boundary cannot be found (BUG-08).
       this.log('error', 'unrecoverable framing error, closing session', { error: error.message });
       this.nack(0, error.status);
       this.emitError(error);
@@ -552,7 +551,7 @@ export class Session extends EventEmitter<SessionEvents> {
       if (isResponseCommand(pdu.command)) this.handleResponse(pdu);
       else this.handleRequest(pdu);
     } catch (err) {
-      // Une erreur dans un listener ne doit jamais casser la session.
+      // A listener error must never break the session.
       this.log('error', 'error while handling PDU', { command: pdu.command, error: toError(err).message });
       this.emitError(
         err instanceof SmppError ? err : new SmppError('SMPP_HANDLER', toError(err).message, { cause: err }),
@@ -572,13 +571,13 @@ export class Session extends EventEmitter<SessionEvents> {
       sequence_number: header?.sequence_number,
     });
     if (header && (header.command_id & RESPONSE_BIT) !== 0) {
-      // Réponse illisible : on rejette la requête correspondante, sans nack.
+      // Unreadable response: reject the matching request, without a nack.
       const req = this.inflight.get(header.sequence_number);
       req?.reject(e);
       this.dispatch();
       return;
     }
-    // Requête illisible : generic_nack et la session continue (BUG-08).
+    // Unreadable request: generic_nack, and the session goes on (BUG-08).
     this.nack(header?.sequence_number ?? 0, e.status);
   }
 
@@ -632,7 +631,7 @@ export class Session extends EventEmitter<SessionEvents> {
 
   private handleRequest(pdu: Pdu): void {
     if (!canSend(peerRole(this.role), this.state, pdu.command)) {
-      // Commande interdite dans cet état ou ce mode de bind (SEC-06, SEC-07).
+      // Command not allowed in this state or bind mode (SEC-06, SEC-07).
       const status =
         pdu.command.startsWith('bind_') && isBound(this.state)
           ? COMMAND_STATUS.ESME_RALYBND
@@ -704,7 +703,7 @@ export class Session extends EventEmitter<SessionEvents> {
         .catch((err: unknown) => {
           this.enquirePending = false;
           if (err instanceof SmppTimeoutError) {
-            // Connexion à moitié ouverte : la session est déclarée morte (BUG-07).
+            // Half-open connection: the session is declared dead (BUG-07).
             const dead = new SmppTimeoutError(
               'enquire_link',
               enquireLinkTimeout,
@@ -720,12 +719,12 @@ export class Session extends EventEmitter<SessionEvents> {
     this.scheduleKeepalive();
   }
 
-  // ---------------------------------------------------------------- fermeture
+  // ---------------------------------------------------------------- closing
 
   private endSocket(): void {
     if (this.socket.destroyed) return;
     this.socket.end();
-    // Le pair peut ne jamais fermer : fermeture forcée après unbindTimeout.
+    // The peer may never close: force it after unbindTimeout.
     const t = setTimeout(() => this.socket.destroy(), this.timeouts.unbindTimeout);
     t.unref?.();
   }
@@ -736,7 +735,7 @@ export class Session extends EventEmitter<SessionEvents> {
     if (this.keepaliveTimer) clearTimeout(this.keepaliveTimer);
     if (this.rateTimer) clearTimeout(this.rateTimer);
     const cause = this.closeError;
-    // BUG-02 : toutes les requêtes en vol sont rejetées, avec l'indication « écrite ».
+    // BUG-02: every in-flight request is rejected, flagged with whether it was written.
     for (const req of [...this.inflight.values()]) {
       req.reject(new SmppConnectionClosedError(true, 'Connection closed before response', { cause }));
     }
@@ -754,9 +753,9 @@ export class Session extends EventEmitter<SessionEvents> {
     this.resolveClosed();
   }
 
-  // ---------------------------------------------------------------- observabilité
+  // ---------------------------------------------------------------- observability
 
-  /** Émet `error` si quelqu'un écoute, sinon journalise : jamais de crash du processus. */
+  /** Emits `error` if someone listens, otherwise logs it: never crashes the process. */
   emitError(err: SmppError): void {
     if (this.listenerCount('error') > 0) this.emit('error', err);
     else this.log('error', err.message, { code: err.code });
@@ -770,7 +769,7 @@ export class Session extends EventEmitter<SessionEvents> {
     try {
       this.logger[level](msg, { ...this.logContext, ...meta });
     } catch {
-      // un logger défaillant ne doit pas casser la session
+      // a failing logger must not break the session
     }
   }
 

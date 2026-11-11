@@ -1,35 +1,35 @@
 /**
- * Table déclarative des TLV (Tag-Length-Value) SMPP v5.0, section 4.8.4.
+ * Declarative table of SMPP v5.0 TLVs (Tag-Length-Value), section 4.8.4.
  */
 
 export type TlvType =
-  /** Entier non signé 1 octet. */
+  /** 1-byte unsigned integer. */
   | 'uint8'
-  /** Entier non signé 2 octets. */
+  /** 2-byte unsigned integer. */
   | 'uint16'
-  /** Entier non signé 4 octets. */
+  /** 4-byte unsigned integer. */
   | 'uint32'
-  /** Chaîne terminée par un octet nul (longueur max incluant le nul). */
+  /** Null-terminated string (maximum length includes the null). */
   | 'cstring'
-  /** Chaîne d'octets brute. */
+  /** Raw octet string. */
   | 'octets'
-  /** network_error_code : type de réseau (1 octet) + code d'erreur (2 octets). */
+  /** network_error_code: network type (1 byte) + error code (2 bytes). */
   | 'network_error'
-  /** TLV sans valeur (longueur 0) ou à 1 octet optionnel. */
+  /** TLV without a value (length 0) or with an optional 1-byte value. */
   | 'flag';
 
 export interface TlvDefinition {
   readonly tag: number;
   readonly type: TlvType;
-  /** Longueur minimale de la valeur en octets. */
+  /** Minimum value length in bytes. */
   readonly min?: number;
-  /** Longueur maximale de la valeur en octets. */
+  /** Maximum value length in bytes. */
   readonly max?: number;
-  /** Le TLV peut apparaître plusieurs fois : la valeur est alors un tableau. */
+  /** The TLV may appear several times: its value is then an array. */
   readonly multiple?: boolean;
-  /** Valeur sensible, masquée dans les logs. */
+  /** Sensitive value, masked in logs. */
   readonly sensitive?: boolean;
-  /** Contenu de message (masqué si `redactContent`). */
+  /** Message content (masked with `redactContent`). */
   readonly content?: boolean;
 }
 
@@ -107,7 +107,7 @@ export interface NetworkErrorCode {
   error_code: number;
 }
 
-/** Type TypeScript d'une valeur TLV selon son type déclaré. */
+/** TypeScript type of a TLV value, from its declared type. */
 export type TlvValueOf<T extends TlvType> = T extends 'uint8' | 'uint16' | 'uint32'
   ? number
   : T extends 'cstring'
@@ -120,14 +120,14 @@ export type TlvValueOf<T extends TlvType> = T extends 'uint8' | 'uint16' | 'uint
 
 type TlvEntry<N extends StandardTlvName> = (typeof TLVS)[N];
 
-/** Valeurs TLV standards, toutes optionnelles. */
+/** Standard TLV values, all optional. */
 export type TlvParams = {
   [N in StandardTlvName]?: TlvEntry<N> extends { multiple: true }
     ? TlvValueOf<TlvEntry<N>['type']>[]
     : TlvValueOf<TlvEntry<N>['type']>;
 };
 
-/** TLV non reconnu, conservé tel quel au décodage et réémis à l'encodage. */
+/** Unrecognized TLV, kept as is when decoding and re-emitted when encoding. */
 export interface UnknownTlv {
   tag: number;
   value: Buffer;

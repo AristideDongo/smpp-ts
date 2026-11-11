@@ -6,16 +6,16 @@ import type { RequestOptions, ResponseOf, Session } from '../session/session.js'
 import type { BindMode, SessionState } from '../session/state-machine.js';
 import { type DlrStatus, dlrStatusToMessageState, formatDlr } from '../utils/dlr.js';
 
-/** Session côté serveur, exposée aux handlers et au hook d'authentification. */
+/** Server-side session, exposed to handlers and to the authentication hook. */
 export class ServerSession<Ctx = unknown> {
-  /** Mode de bind, une fois authentifiée. */
+  /** Bind mode, once authenticated. */
   mode: BindMode | undefined;
-  /** Contexte renvoyé par `authenticate`. */
+  /** Context returned by `authenticate`. */
   context: Ctx | undefined;
 
   constructor(
     readonly session: Session,
-    /** Adresse du client (réelle si Proxy Protocol). */
+    /** Client address (the real one behind Proxy Protocol). */
     readonly remoteAddress: string,
   ) {}
 
@@ -35,7 +35,7 @@ export class ServerSession<Ctx = unknown> {
     return this.state === 'BOUND_RX' || this.state === 'BOUND_TRX';
   }
 
-  /** Envoie un deliver_sm au client. */
+  /** Sends a deliver_sm to the client. */
   deliver(params: PduParams<'deliver_sm'>, options?: RequestOptions): Promise<ResponseOf<'deliver_sm'>> {
     if (!this.canDeliver) {
       return Promise.reject(new SmppStateError('deliver_sm', this.state));
@@ -43,7 +43,7 @@ export class ServerSession<Ctx = unknown> {
     return this.session.request('deliver_sm', params, options);
   }
 
-  /** Envoie un accusé de réception (texte standard + TLV receipted_message_id / message_state). */
+  /** Sends a delivery receipt (standard text + receipted_message_id / message_state TLVs). */
   deliverReceipt(opts: {
     messageId: string;
     status: DlrStatus;
@@ -68,7 +68,7 @@ export class ServerSession<Ctx = unknown> {
     });
   }
 
-  /** Requête générique vers le client. */
+  /** Generic request to the client. */
   request<C extends RequestCommandName>(
     command: C,
     params?: PduParams<C>,
@@ -77,7 +77,7 @@ export class ServerSession<Ctx = unknown> {
     return this.session.request(command, params, options);
   }
 
-  /** Fermeture propre (unbind puis fermeture). */
+  /** Graceful close (unbind, then close). */
   close(): Promise<void> {
     return this.session.close();
   }

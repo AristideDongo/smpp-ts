@@ -1,6 +1,6 @@
 /**
- * Codes command_status (SMPP v5.0, table 4-2) et leur classification
- * pour la politique de nouvelles tentatives (REL-06).
+ * command_status codes (SMPP v5.0, table 4-2) and their classification
+ * for the retry policy (REL-06).
  */
 
 export const COMMAND_STATUS = {
@@ -75,7 +75,7 @@ export const COMMAND_STATUS = {
 
 export type CommandStatusName = keyof typeof COMMAND_STATUS;
 
-/** Alias v3.4 (« optional parameters ») des codes TLV de la v5.0. */
+/** v3.4 aliases ("optional parameters") of the v5.0 TLV codes. */
 export const COMMAND_STATUS_V34_ALIASES = {
   ESME_RINVOPTPARSTREAM: COMMAND_STATUS.ESME_RINVTLVSTREAM,
   ESME_ROPTPARNOTALLWD: COMMAND_STATUS.ESME_RTLVNOTALLWD,
@@ -88,16 +88,16 @@ const STATUS_NAMES = new Map<number, CommandStatusName>(
   (Object.entries(COMMAND_STATUS) as [CommandStatusName, number][]).map(([name, code]) => [code, name]),
 );
 
-/** Nom symbolique d'un command_status, ou `UNKNOWN_0x…` s'il n'est pas défini. */
+/** Symbolic name of a command_status, or `UNKNOWN_0x…` if undefined. */
 export function statusName(code: number): string {
   return STATUS_NAMES.get(code) ?? `UNKNOWN_0x${(code >>> 0).toString(16).padStart(8, '0')}`;
 }
 
 /**
- * Catégories de statut :
- * - `temporary` : nouvelle tentative possible avec backoff ;
- * - `permanent` : rejet définitif ;
- * - `session` : problème de session (bind), rejet + transition d'état.
+ * Status categories:
+ * - `temporary`: can be retried with backoff;
+ * - `permanent`: final rejection;
+ * - `session`: session (bind) problem, rejection + state transition.
  */
 export type StatusCategory = 'ok' | 'temporary' | 'permanent' | 'session';
 
@@ -118,7 +118,7 @@ const SESSION = new Set<number>([
   COMMAND_STATUS.ESME_RINVSYSID,
 ]);
 
-/** Classification par défaut (REL-06). Surchargeable via l'option `classifyStatus`. */
+/** Default classification (REL-06). Override with the `classifyStatus` option. */
 export const defaultStatusClassifier: StatusClassifier = (status) => {
   if (status === COMMAND_STATUS.ESME_ROK) return 'ok';
   if (TEMPORARY.has(status)) return 'temporary';
@@ -126,7 +126,7 @@ export const defaultStatusClassifier: StatusClassifier = (status) => {
   return 'permanent';
 };
 
-/** Statuts qui doivent ralentir le débit d'envoi (REL-04). */
+/** Statuses that must slow down the send rate (REL-04). */
 export function isThrottlingStatus(status: number): boolean {
   return status === COMMAND_STATUS.ESME_RTHROTTLED || status === COMMAND_STATUS.ESME_RMSGQFUL;
 }

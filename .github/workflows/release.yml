@@ -19,7 +19,7 @@ jobs:
           node-version: 22
           cache: npm
           registry-url: https://registry.npmjs.org
-      # Trusted Publishing (OIDC) : npm ≥ 11.5.1, aucun jeton stocké ni code 2FA.
+      # Trusted Publishing (OIDC): npm ≥ 11.5.1, no stored token, no 2FA code.
       - run: npm install -g npm@11
       - run: npm ci
       - uses: changesets/action@v1

@@ -1,4 +1,4 @@
-/** Métrique émise via l'événement `metric` (§10.2). */
+/** Metric emitted through the `metric` event. */
 export type Metric =
   | { name: 'pdu.sent' | 'pdu.received'; type: 'counter'; value: number; labels: { command: string } }
   | { name: 'request.latency'; type: 'histogram'; value: number; labels: { command: string } }

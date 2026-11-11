@@ -1,8 +1,8 @@
 /**
- * Adaptateur OpenTelemetry (`smpp-ts/otel`).
+ * OpenTelemetry adapter (`smpp-ts/otel`).
  *
- * Aucune dépendance : les types ci-dessous décrivent le sous-ensemble de l'API `Meter`
- * d'`@opentelemetry/api` utilisé, que l'application fournit elle-même.
+ * No dependency: the types below describe the subset of the `@opentelemetry/api` `Meter`
+ * API in use, which the application provides itself.
  *
  * ```ts
  * import { metrics } from '@opentelemetry/api';
@@ -33,23 +33,23 @@ export interface OtelMeterLike {
     name: string,
     options?: OtelInstrumentOptions,
   ): { add(value: number, attributes?: OtelAttributes): void };
-  /** Jauge synchrone (`@opentelemetry/api` ≥ 1.9). À défaut, un UpDownCounter est utilisé. */
+  /** Synchronous gauge (`@opentelemetry/api` ≥ 1.9). An UpDownCounter is used otherwise. */
   createGauge?(
     name: string,
     options?: OtelInstrumentOptions,
   ): { record(value: number, attributes?: OtelAttributes): void };
 }
 
-/** Tout émetteur d'événements `metric` : `SmppClient`, `SmppServer`, `Session`. */
+/** Any emitter of `metric` events: `SmppClient`, `SmppServer`, `Session`. */
 export interface MetricSource {
   on(event: 'metric', listener: (metric: Metric, ...rest: never[]) => void): unknown;
   off(event: 'metric', listener: (metric: Metric, ...rest: never[]) => void): unknown;
 }
 
 export interface InstrumentOptions {
-  /** Préfixe des noms d'instruments. Défaut : `smpp`. */
+  /** Instrument name prefix. Default: `smpp`. */
   prefix?: string;
-  /** Attributs ajoutés à chaque mesure (ex. `{ 'smpp.operator': 'orange-ci' }`). */
+  /** Attributes added to every measurement (e.g. `{ 'smpp.operator': 'orange-ci' }`). */
   attributes?: OtelAttributes;
 }
 
@@ -69,9 +69,9 @@ const DESCRIPTIONS: Record<Metric['name'], OtelInstrumentOptions> = {
 type Recorder = (value: number, attributes: OtelAttributes) => void;
 
 /**
- * Relaie les métriques d'un client, d'un serveur ou d'une session vers un `Meter` OpenTelemetry.
- * Côté serveur, chaque mesure porte l'attribut `smpp.system_id` de la session.
- * Renvoie une fonction qui détache l'adaptateur.
+ * Forwards the metrics of a client, server or session to an OpenTelemetry `Meter`.
+ * On the server side, every measurement carries the session's `smpp.system_id` attribute.
+ * Returns a function that detaches the adapter.
  */
 export function instrumentSmpp(
   source: MetricSource,
@@ -81,7 +81,7 @@ export function instrumentSmpp(
   const prefix = options.prefix ?? 'smpp';
   const base = options.attributes ?? {};
   const recorders = new Map<string, Recorder>();
-  /** Dernière valeur par jauge et par jeu d'attributs (repli UpDownCounter). */
+  /** Last value per gauge and attribute set (UpDownCounter fallback). */
   const lastGaugeValues = new Map<string, number>();
 
   const recorderFor = (metric: Metric): Recorder => {
@@ -122,7 +122,7 @@ export function instrumentSmpp(
       if (session?.systemId) attributes['smpp.system_id'] = session.systemId;
       recorderFor(metric)(metric.value, attributes);
     } catch {
-      // Une erreur du SDK de télémétrie ne doit jamais perturber le trafic SMPP.
+      // A telemetry SDK error must never disturb SMPP traffic.
     }
   };
 

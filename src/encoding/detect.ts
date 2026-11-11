@@ -5,24 +5,24 @@ export type DetectedEncoding = 'gsm7' | 'latin1' | 'ucs2';
 
 export interface DetectOptions {
   /**
-   * Tables de shift nationales autorisées, par ordre de préférence.
-   * Défaut : aucune (beaucoup de SMSC ne gèrent pas l'IE UDH 0x24).
+   * National shift tables allowed, in order of preference.
+   * Default: none (many SMSCs do not support UDH IE 0x24).
    */
   shiftTables?: readonly NationalLanguage[];
   /**
-   * Autorise Latin-1 (data_coding 0x03) avant UCS2.
-   * Défaut : false (support inégal chez les opérateurs).
+   * Allows Latin-1 (data_coding 0x03) before UCS2.
+   * Default: false (uneven operator support).
    */
   allowLatin1?: boolean;
 }
 
 export interface DetectionResult {
   encoding: DetectedEncoding;
-  /** Table de shift nationale nécessaire, le cas échéant. */
+  /** National shift table required, if any. */
   shift?: NationalLanguage;
 }
 
-/** Choisit l'encodage le plus compact capable de représenter le texte. */
+/** Picks the most compact encoding able to represent the text. */
 export function detectEncoding(text: string, options: DetectOptions = {}): DetectionResult {
   if (canEncodeGsm7(text)) return { encoding: 'gsm7' };
   for (const shift of options.shiftTables ?? []) {

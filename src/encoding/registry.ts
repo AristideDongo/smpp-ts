@@ -11,19 +11,19 @@ import {
 } from './latin1.js';
 import { decodeUcs2, encodeUcs2 } from './ucs2.js';
 
-/** Encodage de texte enregistrable (registre extensible, §9). */
+/** Text encoding that can be registered (extensible registry). */
 export interface TextCodec {
-  /** Nom unique (`gsm7`, `latin1`, `ucs2`, `ascii` ou propre à un opérateur). */
+  /** Unique name (`gsm7`, `latin1`, `ucs2`, `ascii` or operator-specific). */
   readonly name: string;
-  /** Valeur data_coding à utiliser à l'envoi. */
+  /** data_coding value used when sending. */
   readonly dataCoding: number;
-  /** Taille d'une unité en bits pour le calcul des segments (7, 8 ou 16). */
+  /** Unit size in bits for segment computation (7, 8 or 16). */
   readonly unitBits: 7 | 8 | 16;
   canEncode(text: string): boolean;
-  /** Encode ; doit lever une erreur si le texte n'est pas représentable. */
+  /** Encodes; must throw if the text cannot be represented. */
   encode(text: string): Buffer;
   decode(buf: Uint8Array): string;
-  /** Nombre d'unités occupées par le texte (septets, octets ou unités UTF-16). */
+  /** Number of units the text takes (septets, octets or UTF-16 code units). */
   length(text: string): number;
 }
 
@@ -67,14 +67,14 @@ export const asciiCodec: TextCodec = {
   length: (t) => t.length,
 };
 
-/** Registre des encodages et correspondance data_coding → encodage. */
+/** Encoding registry and data_coding → encoding mapping. */
 export class EncodingRegistry {
   private readonly codecs = new Map<string, TextCodec>();
   private readonly byDataCoding = new Map<number, string>();
 
   constructor() {
     for (const c of [gsm7Codec, latin1Codec, ucs2Codec, asciiCodec]) this.register(c);
-    // 0x00 « défaut SMSC » : GSM7 par défaut (configurable). 0x01 IA5 : GSM7 en pratique.
+    // 0x00 "SMSC default": GSM7 by default (configurable). 0x01 IA5: GSM7 in practice.
     this.byDataCoding.set(DATA_CODING.SMSC_DEFAULT, 'gsm7');
     this.byDataCoding.set(DATA_CODING.IA5, 'gsm7');
     this.byDataCoding.set(DATA_CODING.LATIN1, 'latin1');
@@ -87,7 +87,7 @@ export class EncodingRegistry {
     return this;
   }
 
-  /** Associe une valeur data_coding à un encodage (ex. `0x00 → 'latin1'` pour un SMSC donné). */
+  /** Maps a data_coding value to an encoding (e.g. `0x00 → 'latin1'` for a given SMSC). */
   mapDataCoding(dataCoding: number, name: string): this {
     if (!this.codecs.has(name)) throw new SmppError('SMPP_CONFIG', `Unknown encoding ${name}`);
     this.byDataCoding.set(dataCoding, name);
@@ -105,8 +105,8 @@ export class EncodingRegistry {
   }
 
   /**
-   * Encodage correspondant à un data_coding, ou `undefined` pour des données binaires.
-   * Gère le groupe 0xF0–0xFF (classe de message) de GSM 03.38.
+   * Encoding matching a data_coding, or `undefined` for binary data.
+   * Handles the GSM 03.38 0xF0–0xFF group (message class).
    */
   forDataCoding(dataCoding: number): TextCodec | undefined {
     const name = this.byDataCoding.get(dataCoding);
@@ -114,7 +114,7 @@ export class EncodingRegistry {
     if ((dataCoding & 0xf0) === 0xf0) {
       return dataCoding & 0x04 ? undefined : this.codecs.get('gsm7');
     }
-    // Groupe « general data coding » (00xx xxxx) : bits 3-2 = alphabet.
+    // "General data coding" group (00xx xxxx): bits 3-2 = alphabet.
     if ((dataCoding & 0xc0) === 0x00 && dataCoding >= 0x10) {
       const alphabet = (dataCoding >> 2) & 0x03;
       if (alphabet === 0) return this.codecs.get('gsm7');
@@ -124,10 +124,10 @@ export class EncodingRegistry {
   }
 }
 
-/** Registre global par défaut. */
+/** Default global registry. */
 export const encodings = new EncodingRegistry();
 
-/** Encode un texte selon un data_coding (strict : erreur si non représentable). */
+/** Encodes a text for a data_coding (strict: throws if it cannot be represented). */
 export function encodeText(text: string, dataCoding: number, registry: EncodingRegistry = encodings): Buffer {
   const codec = registry.forDataCoding(dataCoding);
   if (!codec) {
@@ -139,7 +139,7 @@ export function encodeText(text: string, dataCoding: number, registry: EncodingR
   return codec.encode(text);
 }
 
-/** Décode un contenu selon son data_coding. Renvoie `undefined` pour un contenu binaire. */
+/** Decodes content according to its data_coding. Returns `undefined` for binary content. */
 export function decodeText(
   buf: Uint8Array,
   dataCoding: number,

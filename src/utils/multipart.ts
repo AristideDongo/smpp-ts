@@ -26,11 +26,11 @@ export interface ConcatInfo {
 }
 
 export interface ParsedUdh {
-  /** Taille totale de l'UDH, UDHL compris. */
+  /** Total UDH size, UDHL included. */
   length: number;
   elements: InformationElement[];
   concat?: ConcatInfo;
-  /** Table de single shift nationale annoncée. */
+  /** Announced national single shift table. */
   shift?: NationalLanguage;
 }
 
@@ -45,7 +45,7 @@ export function buildUdh(elements: InformationElement[]): Buffer {
   return Buffer.concat([Buffer.from([body.length]), body]);
 }
 
-/** Analyse un UDH. Renvoie `undefined` s'il est malformé (jamais d'exception). */
+/** Parses a UDH. Returns `undefined` when malformed (never throws). */
 export function parseUdh(buf: Uint8Array): ParsedUdh | undefined {
   if (buf.length < 1) return undefined;
   const udhl = buf[0]!;
@@ -74,20 +74,20 @@ export function parseUdh(buf: Uint8Array): ParsedUdh | undefined {
 }
 
 /**
- * Vrai si l'esm_class annonce un UDH.
- * BUG-04 : l'indicateur Kannel (0x43) contient le bit UDHI (0x40) ; on teste ce bit,
- * ce qui couvre les deux variantes sans faux positif sur les bits de mode (0x01–0x03).
+ * True when esm_class announces a UDH.
+ * BUG-04: the Kannel indicator (0x43) includes the UDHI bit (0x40); testing that bit
+ * covers both variants without false positives on the mode bits (0x01–0x03).
  */
 export function hasUdhIndicator(esmClass: number): boolean {
   return (esmClass & ESM_CLASS.UDH_INDICATOR) !== 0;
 }
 
 // ---------------------------------------------------------------------------
-// Construction des segments sortants
+// Building outgoing segments
 // ---------------------------------------------------------------------------
 
 export interface OutboundPart {
-  /** Contenu à placer dans short_message (absent si message_payload). */
+  /** Content for short_message (absent when message_payload is used). */
   short_message?: Buffer;
   message_payload?: Buffer;
   esm_class: number;
@@ -98,11 +98,11 @@ export interface OutboundPart {
 }
 
 export interface BuildPartsOptions extends SegmentOptions {
-  /** Référence de concaténation (tournante par session). */
+  /** Concatenation reference (rotating per session). */
   reference: number;
-  /** Compacte les septets GSM7 (rare en SMPP). Défaut : false. */
+  /** Packs GSM7 septets (rare in SMPP). Default: false. */
   packGsm7?: boolean;
-  /** esm_class de base (le bit UDHI est ajouté si nécessaire). */
+  /** Base esm_class (the UDHI bit is added when needed). */
   esmClass?: number;
 }
 
@@ -114,7 +114,7 @@ export interface BuiltParts {
   parts: OutboundPart[];
 }
 
-/** Découpe et encode un texte en PDU prêts à envoyer. */
+/** Splits and encodes a text into PDUs ready to send. */
 export function buildParts(text: string, options: BuildPartsOptions): BuiltParts {
   const split = splitText(text, options);
   const { codec, shift, strategy } = split;
@@ -171,7 +171,7 @@ export function buildParts(text: string, options: BuildPartsOptions): BuiltParts
 }
 
 // ---------------------------------------------------------------------------
-// Décodage des messages entrants
+// Decoding incoming messages
 // ---------------------------------------------------------------------------
 
 export interface MessageContentInput {
@@ -185,9 +185,9 @@ export interface MessageContentInput {
 }
 
 export interface DecodedContent {
-  /** Corps sans l'UDH (septets non compactés pour GSM7). */
+  /** Body without the UDH (unpacked septets for GSM7). */
   body: Buffer;
-  /** Texte décodé, ou `undefined` pour un contenu binaire. */
+  /** Decoded text, or `undefined` for binary content. */
   text?: string;
   udh?: ParsedUdh;
   concat?: ConcatInfo;
@@ -196,11 +196,11 @@ export interface DecodedContent {
 
 export interface DecodeContentOptions {
   registry?: EncodingRegistry;
-  /** Les septets GSM7 entrants sont compactés. Défaut : false. */
+  /** Incoming GSM7 septets are packed. Default: false. */
   packedGsm7?: boolean;
 }
 
-/** Extrait l'UDH et décode le texte d'un deliver_sm / data_sm / submit_sm. */
+/** Extracts the UDH and decodes the text of a deliver_sm / data_sm / submit_sm. */
 export function decodeMessageContent(
   pdu: MessageContentInput,
   options: DecodeContentOptions = {},
@@ -218,7 +218,7 @@ export function decodeMessageContent(
     if (udh) body = raw.subarray(udh.length);
   }
   const isGsm = codec?.name === 'gsm7';
-  // BUG-05 : le traitement GSM (septets, bits de bourrage) ne s'applique qu'aux encodages GSM.
+  // BUG-05: GSM handling (septets, fill bits) only applies to GSM encodings.
   if (isGsm && options.packedGsm7) {
     const fill = udh ? (7 - ((udh.length * 8) % 7)) % 7 : 0;
     body = unpackSeptets(raw, undefined, fill + (udh ? udh.length * 8 : 0));
@@ -241,7 +241,7 @@ export function decodeMessageContent(
 }
 
 // ---------------------------------------------------------------------------
-// Réassemblage
+// Reassembly
 // ---------------------------------------------------------------------------
 
 export interface ReassemblySegment<T = unknown> {
@@ -251,7 +251,7 @@ export interface ReassemblySegment<T = unknown> {
   body: Buffer;
   dataCoding: number;
   shift?: NationalLanguage;
-  /** Donnée libre associée (ex. le PDU d'origine). */
+  /** Free-form attached data (e.g. the original PDU). */
   meta: T;
 }
 
@@ -260,23 +260,23 @@ export interface ReassembledMessage<T = unknown> {
   destination: string;
   reference: number;
   total: number;
-  /** Texte complet (ou partiel pour un message expiré), `undefined` si binaire. */
+  /** Full text (or partial, for an expired message), `undefined` if binary. */
   text?: string;
   body: Buffer;
   dataCoding: number;
-  /** Segments reçus, dans l'ordre. */
+  /** Received segments, in order. */
   segments: ReassemblySegment<T>[];
-  /** Numéros de segments manquants (message partiel uniquement). */
+  /** Missing segment numbers (partial message only). */
   missing: number[];
 }
 
 export interface ReassemblerOptions<T> {
-  /** Durée de vie d'un message incomplet. Défaut : 5 min (SEC-04). */
+  /** Lifetime of an incomplete message. Default: 5 min (SEC-04). */
   ttl?: number;
-  /** Nombre max de messages incomplets en mémoire. Défaut : 1 000 (SEC-04). */
+  /** Maximum number of incomplete messages in memory. Default: 1 000 (SEC-04). */
   maxBuffers?: number;
   registry?: EncodingRegistry;
-  /** Appelé quand un message incomplet expire ou est évincé. */
+  /** Called when an incomplete message expires or is evicted. */
   onPartial?: (msg: ReassembledMessage<T>) => void;
 }
 
@@ -286,7 +286,7 @@ interface Bucket<T> {
   timer: ReturnType<typeof setTimeout>;
 }
 
-/** Réassemble les segments par (source, destination, référence). Mémoire bornée. */
+/** Reassembles segments by (source, destination, reference). Bounded memory. */
 export class Reassembler<T = unknown> {
   private readonly buckets = new Map<string, Bucket<T>>();
   private readonly ttl: number;
@@ -303,7 +303,7 @@ export class Reassembler<T = unknown> {
     return this.buckets.size;
   }
 
-  /** Ajoute un segment. Renvoie le message complet quand tous les segments sont arrivés. */
+  /** Adds a segment. Returns the full message once every segment has arrived. */
   add(segment: ReassemblySegment<T>): ReassembledMessage<T> | undefined {
     const { concat } = segment;
     if (concat.total < 1 || concat.sequence < 1 || concat.sequence > concat.total) return undefined;
@@ -316,14 +316,14 @@ export class Reassembler<T = unknown> {
       bucket = { segments: new Map(), total: concat.total, timer };
       this.buckets.set(key, bucket);
     }
-    bucket.segments.set(concat.sequence, segment); // doublon : le dernier gagne
+    bucket.segments.set(concat.sequence, segment); // duplicate: the last one wins
     if (bucket.segments.size < bucket.total) return undefined;
     clearTimeout(bucket.timer);
     this.buckets.delete(key);
     return this.assemble(bucket, segment);
   }
 
-  /** Vide les buffers (sans émettre de messages partiels). */
+  /** Clears the buffers (without emitting partial messages). */
   clear(): void {
     for (const b of this.buckets.values()) clearTimeout(b.timer);
     this.buckets.clear();

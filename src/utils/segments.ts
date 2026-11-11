@@ -4,18 +4,18 @@ import { type EncodingRegistry, type TextCodec, encodings } from '../encoding/re
 import { SmppValidationError } from '../errors.js';
 
 /**
- * Stratégie d'envoi des messages longs :
- * - `udh8` : UDH concaténation 8 bits (IEI 0x00), défaut ;
- * - `udh16` : UDH concaténation 16 bits (IEI 0x08) ;
- * - `sar` : TLV sar_msg_ref_num / sar_total_segments / sar_segment_seqnum ;
- * - `payload` : un seul PDU avec message_payload (le SMSC découpe).
+ * Long message strategy:
+ * - `udh8`: 8-bit concatenation UDH (IEI 0x00), default;
+ * - `udh16`: 16-bit concatenation UDH (IEI 0x08);
+ * - `sar`: sar_msg_ref_num / sar_total_segments / sar_segment_seqnum TLVs;
+ * - `payload`: a single PDU with message_payload (the SMSC splits it).
  */
 export type MultipartStrategy = 'udh8' | 'udh16' | 'sar' | 'payload';
 
 export interface SegmentOptions extends DetectOptions {
-  /** Encodage forcé (nom dans le registre). Erreur si le texte n'est pas représentable. */
+  /** Forced encoding (registry name). Throws if the text cannot be represented. */
   encoding?: string;
-  /** Table de shift nationale forcée (GSM7 uniquement). */
+  /** Forced national shift table (GSM7 only). */
   shift?: NationalLanguage;
   strategy?: MultipartStrategy;
   registry?: EncodingRegistry;
@@ -26,19 +26,19 @@ export interface SegmentInfo {
   shift?: NationalLanguage;
   dataCoding: number;
   strategy: MultipartStrategy;
-  /** Nombre de segments sur l'interface radio. */
+  /** Number of segments on the radio interface. */
   segments: number;
-  /** Longueur totale en unités (septets, octets ou unités UTF-16). */
+  /** Total length in units (septets, octets or UTF-16 code units). */
   units: number;
-  /** Capacité d'un segment, en unités. */
+  /** Capacity of one segment, in units. */
   perSegment: number;
-  /** Unités encore disponibles dans le dernier segment. */
+  /** Units still available in the last segment. */
   remaining: number;
 }
 
 const SM_OCTETS = 140;
 
-/** Taille de l'UDH (UDHL inclus) pour un segment. */
+/** UDH size (UDHL included) for one segment. */
 export function udhLength(multipart: boolean, strategy: MultipartStrategy, shift?: NationalLanguage): number {
   let ies = 0;
   if (multipart && (strategy === 'udh8' || strategy === 'payload')) ies += 5;
@@ -47,7 +47,7 @@ export function udhLength(multipart: boolean, strategy: MultipartStrategy, shift
   return ies === 0 ? 0 : ies + 1;
 }
 
-/** Capacité en unités d'un segment, compte tenu de l'UDH. */
+/** Capacity of one segment in units, accounting for the UDH. */
 export function segmentCapacity(unitBits: 7 | 8 | 16, udhBytes: number): number {
   const octets = SM_OCTETS - udhBytes;
   if (unitBits === 7) return Math.floor((octets * 8) / 7);
@@ -85,11 +85,11 @@ function resolve(text: string, options: SegmentOptions): Resolved {
 
 function charCost(ch: string, r: Resolved): number {
   if (r.codec.name === 'gsm7') return gsm7CharCost(ch, r.shift) ?? 1;
-  if (r.codec.unitBits === 16) return ch.length; // paire de substitution = 2 unités
+  if (r.codec.unitBits === 16) return ch.length; // surrogate pair = 2 units
   return r.codec.length(ch);
 }
 
-/** Calcule l'encodage, le nombre de segments et la place restante (§6.5). */
+/** Computes the encoding, the number of segments and the remaining room. */
 export function countSegments(text: string, options: SegmentOptions = {}): SegmentInfo {
   const r = resolve(text, options);
   const strategy = options.strategy ?? 'udh8';
@@ -116,8 +116,8 @@ export function countSegments(text: string, options: SegmentOptions = {}): Segme
 }
 
 /**
- * Découpe sans jamais couper une séquence d'échappement GSM ni une paire de substitution UTF-16 :
- * l'itération se fait par point de code et le coût de chaque caractère est indivisible.
+ * Splits without ever breaking a GSM escape sequence or a UTF-16 surrogate pair:
+ * iteration is per code point and each character's cost is indivisible.
  */
 function splitByCost(text: string, r: Resolved, capacity: number): string[] {
   const parts: string[] = [];
@@ -141,11 +141,11 @@ export interface SplitResult {
   codec: TextCodec;
   shift?: NationalLanguage;
   strategy: MultipartStrategy;
-  /** Texte de chaque segment (un seul pour `payload`). */
+  /** Text of each segment (just one for `payload`). */
   parts: string[];
 }
 
-/** Découpe un texte en segments prêts à être encodés. */
+/** Splits a text into segments ready to encode. */
 export function splitText(text: string, options: SegmentOptions = {}): SplitResult {
   const r = resolve(text, options);
   const strategy = options.strategy ?? 'udh8';

@@ -1,10 +1,10 @@
-# Guide de migration
+# Migration guide
 
-Ce guide aide à passer d'une bibliothèque SMPP Node.js à callbacks (une seule classe `Session`, envoi par `session.submit_sm(params, callback)`) à `smpp-ts`.
+This guide helps you move from a callback-based Node.js SMPP library (a single `Session` class, sending with `session.submit_sm(params, callback)`) to `smpp-ts`.
 
-## Connexion et bind
+## Connecting and binding
 
-Avant :
+Before:
 
 ```js
 const session = smpp.connect({ url: 'smpp://smsc:2775', auto_enquire_link_period: 30000 }, () => {
@@ -14,7 +14,7 @@ const session = smpp.connect({ url: 'smpp://smsc:2775', auto_enquire_link_period
 });
 ```
 
-Après :
+After:
 
 ```ts
 const client = new SmppClient({
@@ -22,14 +22,14 @@ const client = new SmppClient({
   bind: { mode: 'transceiver', system_id: 'xxx', password: 'yyy' },
   enquireLinkInterval: 30_000,
 });
-await client.connect(); // rejette avec SmppStatusError si le bind est refusé
+await client.connect(); // rejects with SmppStatusError if the bind is refused
 ```
 
-Le keepalive est actif par défaut et une connexion morte est détectée (`enquireLinkTimeout`). La reconnexion avec re-bind est automatique.
+Keepalive is on by default and a dead connection is detected (`enquireLinkTimeout`). Reconnection with re-bind is automatic.
 
-## Envoi
+## Sending
 
-Avant : trois callbacks (réponse, envoi, échec), et aucune notification si le SMSC ne répond jamais.
+Before: three callbacks (response, sent, failure), and no notification at all if the SMSC never answers.
 
 ```js
 session.submit_sm({ destination_addr: '…', short_message: 'Hello' }, (pdu) => {
@@ -37,55 +37,56 @@ session.submit_sm({ destination_addr: '…', short_message: 'Hello' }, (pdu) => 
 });
 ```
 
-Après : une Promise qui aboutit toujours, par une réponse, une erreur ou un timeout.
+After: a Promise that always settles, with a response, an error or a timeout.
 
 ```ts
 const { message_id } = await client.submit({ destination_addr: '…', short_message: 'Hello' });
-// ou, avec choix de l'encodage et découpage automatiques :
+// or, with automatic encoding and splitting:
 const { messageIds } = await client.sendText({ to: '…', from: '…', text: 'Hello' });
 ```
 
-Les raccourcis par commande restent disponibles sous `client.raw` : `client.raw.submit_multi({ … })`, `client.raw.data_sm({ … })`…
+Per-command shortcuts are still available under `client.raw`: `client.raw.submit_multi({ … })`, `client.raw.data_sm({ … })`…
 
-## Différences de comportement
+## Behaviour differences
 
-| Sujet | Avant | `smpp-ts` |
+| Topic | Before | `smpp-ts` |
 |---|---|---|
-| TLS | Certificat non vérifié par défaut | **Vérifié** ; utiliser `tls.ca` pour un certificat auto-signé |
-| SMSC muet | Attente infinie | `SmppTimeoutError` après `requestTimeout` |
-| Coupure réseau | Callbacks perdus | `SmppConnectionClosedError` avec `written` |
-| Événement `error` non écouté | Arrêt du processus | Transmis au logger |
-| PDU invalide reçu | Arrêt du traitement | `generic_nack` et la session continue |
-| Logs debug | PDU complets, mot de passe compris | Mot de passe toujours masqué |
-| Envoi avant bind | Possible | `SmppStateError` |
-| `short_message` texte | Remplacement silencieux des caractères non représentables | Erreur si un encodage forcé ne peut pas représenter le texte |
+| TLS | Certificate not verified by default | **Verified**; use `tls.ca` for a self-signed certificate |
+| Silent SMSC | Waits forever | `SmppTimeoutError` after `requestTimeout` |
+| Network outage | Callbacks lost | `SmppConnectionClosedError` with `written` |
+| Unhandled `error` event | Process exits | Sent to the logger |
+| Invalid PDU received | Processing stops | `generic_nack`, the session goes on |
+| Debug logs | Full PDUs, password included | Password always masked |
+| Sending before bind | Possible | `SmppStateError` |
+| Text `short_message` | Unrepresentable characters silently replaced | Error if a forced encoding cannot represent the text |
+| Sender / recipient | Sent as given | Normalized and validated (`+`, `00`, separators, 11-char alphanumeric sender) |
 
-## Réception
+## Receiving
 
 ```ts
-client.on('deliver', (pdu) => { /* PDU brut */ });
+client.on('deliver', (pdu) => { /* raw PDU */ });
 client.on('deliveryReport', (dlr) => { /* { messageId, status: 'DELIVERED' | … } */ });
-client.on('message', (msg) => { /* MO, segments déjà réassemblés */ });
+client.on('message', (msg) => { /* MO, segments already reassembled */ });
 ```
 
-Le `deliver_sm_resp` est envoyé automatiquement. Avec `autoAck: false`, répondez vous-même avec `client.respond(pdu, { command_status })`.
+`deliver_sm_resp` is sent automatically. With `autoAck: false`, answer yourself with `client.respond(pdu, { command_status })`.
 
-## Serveur
+## Server
 
-Avant : les événements `session` et `bind_transceiver`, puis `session.send(pdu.response())`.
+Before: the `session` and `bind_transceiver` events, then `session.send(pdu.response())`.
 
-Après :
+After:
 
 ```ts
 new SmppServer({
-  authenticate: ({ system_id, password }) => …,  // obligatoire
+  authenticate: ({ system_id, password }) => …,  // required
   handlers: { submit_sm: (pdu) => ({ message_id: '…' }) },
 });
 ```
 
 ## Proxy Protocol
 
-Plus de dépendance externe ni de remplacement de `socket.emit`. Les versions v1 et v2 sont gérées en interne, et la liste des proxys de confiance est obligatoire :
+No external dependency and no more patching of `socket.emit`. Versions v1 and v2 are handled internally, and the list of trusted proxies is required:
 
 ```ts
 new SmppServer({ …, proxyProtocol: { trustedProxies: ['10.0.0.0/8'] } });

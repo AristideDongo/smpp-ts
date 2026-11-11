@@ -1,12 +1,12 @@
 /**
- * Utilitaires sans réseau : segments, encodage, DLR, dates.
+ * Offline utilities: segments, encoding, DLR, dates.
  *
  *   npx tsx examples/utilities.ts
  */
 import { countSegments, detectEncoding, formatRelativeTime, parseDlr, parseSmppTime } from '../src/index.js';
 
-console.log(countSegments('Bonjour {monde} €'));
-// { encoding: 'gsm7', segments: 1, units: 20, perSegment: 160, remaining: 140, ... }
+console.log(countSegments('Hello {world} €'));
+// { encoding: 'gsm7', segments: 1, units: 18, perSegment: 160, remaining: 142, ... }
 
 console.log(countSegments('Fenêtre '.repeat(20)));
 // { encoding: 'ucs2', segments: 3, ... }
@@ -20,5 +20,5 @@ console.log(
   ),
 );
 
-console.log(formatRelativeTime(2 * 3600_000)); // '000000020000000R' (validité : 2 h)
+console.log(formatRelativeTime(2 * 3600_000)); // '000000020000000R' (validity: 2 h)
 console.log(parseSmppTime('241110153045204+'));
