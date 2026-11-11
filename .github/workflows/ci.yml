@@ -65,36 +65,93 @@ jobs:
         run: deno run --allow-net --allow-read --allow-env test/runtime/smoke.mjs
 
   interop:
+    name: interop (${{ matrix.peer }})
     runs-on: ubuntu-latest
-    # Third-party simulator: a failure flags a variant to handle, without blocking the PR
+    # Third-party implementations: a failure flags a variant to handle, without blocking the PR
     # until the suite has been green over several runs.
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        # smpp-ts client against third-party SMSCs, smpp-ts server against third-party clients.
+        peer: [smscsim, jsmpp, python-smpplib, gosmpp]
     env:
       # The `ukarim/smscsim:latest` Docker Hub image is not built for amd64:
       # build the simulator from source, at a pinned commit.
       SMSCSIM_REF: 92ca8a83a1c84326421ad61a9cc9eb177931ee5f
+      JSMPP_VERSION: 3.0.2
+      JSMPP_SHA256: 0440dc07ebcad177d403876539cd9fc5047ec853fae8349075c61a56a4df39d0
+      SLF4J_VERSION: 2.0.16
+      SLF4J_SHA256: a12578dde1ba00bd9b816d388a0b879928d00bab3c83c240f7013bf4196c579a
+      SMPPLIB_VERSION: 2.2.4
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - uses: actions/setup-go@v5
+      - run: npm ci
+
+      # ---------------------------------------------------------------- smscsim (Go SMSC)
+      - if: matrix.peer == 'smscsim' || matrix.peer == 'gosmpp'
+        uses: actions/setup-go@v5
         with:
           go-version: '1.26'
           cache: false
-      - run: go install github.com/ukarim/smscsim@${SMSCSIM_REF}
-      - name: Start SMSC simulator
+      - if: matrix.peer == 'smscsim'
+        run: go install github.com/ukarim/smscsim@${SMSCSIM_REF}
+      - if: matrix.peer == 'smscsim'
+        name: Start SMSC simulator
         run: |
-          nohup "$(go env GOPATH)/bin/smscsim" > smscsim.log 2>&1 &
+          nohup "$(go env GOPATH)/bin/smscsim" > peer.log 2>&1 &
           for i in $(seq 1 50); do (echo > /dev/tcp/127.0.0.1/2775) 2>/dev/null && exit 0; sleep 0.2; done
-          cat smscsim.log; exit 1
-      - run: npm ci
-      - run: npm run test:interop
+          cat peer.log; exit 1
+
+      # ---------------------------------------------------------------- jsmpp (Java SMSC)
+      - if: matrix.peer == 'jsmpp'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - if: matrix.peer == 'jsmpp'
+        name: Start jsmpp SMSC
+        run: |
+          curl -sSfLo jsmpp.jar "https://repo1.maven.org/maven2/org/jsmpp/jsmpp/${JSMPP_VERSION}/jsmpp-${JSMPP_VERSION}.jar"
+          curl -sSfLo slf4j-api.jar "https://repo1.maven.org/maven2/org/slf4j/slf4j-api/${SLF4J_VERSION}/slf4j-api-${SLF4J_VERSION}.jar"
+          echo "${JSMPP_SHA256}  jsmpp.jar" | sha256sum -c
+          echo "${SLF4J_SHA256}  slf4j-api.jar" | sha256sum -c
+          nohup java -cp jsmpp.jar:slf4j-api.jar test/interop/servers/JsmppSmsc.java 2775 > peer.log 2>&1 &
+          for i in $(seq 1 100); do (echo > /dev/tcp/127.0.0.1/2775) 2>/dev/null && exit 0; sleep 0.3; done
+          cat peer.log; exit 1
+
+      - if: matrix.peer == 'smscsim' || matrix.peer == 'jsmpp'
+        run: npm run test:interop
         env:
           SMPP_INTEROP_URL: smpp://127.0.0.1:2775
-      - if: always()
-        run: cat smscsim.log
+
+      # ---------------------------------------------------------------- python-smpplib (Python client)
+      - if: matrix.peer == 'python-smpplib'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - if: matrix.peer == 'python-smpplib'
+        run: pip install "smpplib==${SMPPLIB_VERSION}"
+      - if: matrix.peer == 'python-smpplib'
+        run: npm run test:interop
+        env:
+          SMPP_INTEROP_CLIENT: python test/interop/clients/python_smpplib.py
+
+      # ---------------------------------------------------------------- gosmpp (Go client)
+      - if: matrix.peer == 'gosmpp'
+        run: go build -o gosmpp-client .
+        working-directory: test/interop/clients/gosmpp
+      - if: matrix.peer == 'gosmpp'
+        run: npm run test:interop
+        env:
+          SMPP_INTEROP_CLIENT: test/interop/clients/gosmpp/gosmpp-client
+
+      - if: always() && (matrix.peer == 'smscsim' || matrix.peer == 'jsmpp')
+        run: cat peer.log
 
   bench:
     # Same runner for the base branch and the PR: absolute numbers vary between runners,
