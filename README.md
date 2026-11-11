@@ -115,6 +115,7 @@ Every error extends `SmppError` and carries a stable `code`:
 | `SmppTimeoutError` | Timeout (request, bind, keepalive…): `kind`, `written` |
 | `SmppConnectionClosedError` | Connection closed with a pending request: `written` |
 | `SmppQueueFullError` | Send queue full |
+| `SmppAbortError` | Request cancelled through its `AbortSignal`: `written` |
 | `SmppStateError` | Operation not allowed in the current state or bind mode |
 | `SmppValidationError` | Invalid parameter: no PDU was sent |
 | `SmppDecodeError` | Invalid PDU received |
@@ -139,6 +140,20 @@ An `error` event without a listener does not end the process: it goes to the log
 | `reconnect` | on | Exponential backoff with jitter, unlimited attempts |
 | `retry` | 2 retries | Only on temporary statuses (`ESME_RTHROTTLED`, `ESME_RMSGQFUL`, `ESME_RSYSERR`) |
 | `rateLimit` | none | Token bucket; the rate drops automatically on `ESME_RTHROTTLED` / `ESME_RMSGQFUL` |
+| `maxWriteBuffer` | 1 MiB | Bytes waiting in the socket write buffer before the session is closed |
+
+While the socket write buffer is full, the session stops reading until the peer catches up (backpressure in both directions).
+
+Every request accepts an `AbortSignal`, and so does `sendText`:
+
+```ts
+const ac = new AbortController();
+setTimeout(() => ac.abort(), 2_000);
+await client.sendText({ to, from, text, signal: ac.signal });
+await client.submit(params, { signal: ac.signal });
+```
+
+The request is rejected with `SmppAbortError`. `written: false` means it never left; `written: true` means it was already written and the SMSC may still accept it. With `sendText`, only the segments not sent yet are cancelled.
 
 During a reconnection, messages not yet written stay queued and go out after the re-bind. Messages in flight when the connection dropped are rejected with `SmppConnectionClosedError` (`written: true`).
 
@@ -169,6 +184,10 @@ new SmppClient({
 
 Splitting never breaks a GSM escape sequence or an emoji (UTF-16 surrogate pair). On receipt, segments are reassembled by (source, destination, reference), with a lifetime (`reassembly.ttl`, 5 min) and a maximum number of incomplete messages in memory (`reassembly.maxBuffers`, 1,000). On expiry, the `partialMessage` event delivers whatever was received.
 
+Each segment is billed as one SMS. `multipart.maxSegments` (or `maxSegments` per call) caps the number of segments: a longer text is rejected with a `SmppValidationError` (`ESME_RINVMSGLEN`) before anything is sent. Default: 255, the protocol maximum.
+
+`flash: true` sends a flash SMS (message class 0: shown at once, not stored by the handset). It works with GSM7, UCS2 and binary content; with Latin-1 or ASCII it is rejected before sending.
+
 ## Server
 
 ```ts
@@ -196,7 +215,11 @@ await server.deliver('system_id', { source_addr: '…', destination_addr: '…',
 - Until a session is bound, it only handles `bind_*`, `enquire_link`, `unbind` and `generic_nack`. Any other command gets `ESME_RINVBNDSTS`.
 - A `transmitter` session does not receive `deliver_sm`, and a `receiver` session cannot send `submit_sm`.
 - If a handler fails or does not answer within `handlerTimeout` (10 s), the server answers `ESME_RSYSERR`.
-- Built-in limits: `bindTimeout` (30 s), `idleTimeout` (5 min), `maxSessions`, `maxSessionsPerIp`, `maxSessionsPerSystemId`, and a temporary IP ban after repeated failed binds (`bindFailures`).
+- Built-in limits: `bindTimeout` (30 s), `handshakeTimeout` (TLS, 10 s), `idleTimeout` (5 min), `maxSessions` (1,000), `maxSessionsPerIp` (50), `maxSessionsPerSystemId` (10), and a temporary IP ban after repeated failed binds (`bindFailures`).
+- `maxSessions` and `maxSessionsPerIp` count every connection from the moment it is accepted, including those still sending their PROXY header or doing their TLS handshake. `maxSessionsPerSystemId` counts binds still being authenticated, so concurrent binds cannot exceed it.
+- `bindFailures` bans by IP. Brute force on one `system_id` from many addresses must be handled in `authenticate()` (with a shared store when several instances run).
+- Inbound window: at most `inboundWindow` (10) requests per session wait for their handler at the same time. Beyond that, reading pauses until a handler answers (`inboundWindowPolicy: 'pause'`, default), or extra requests get `ESME_RTHROTTLED` at once (`'throttle'`).
+- A peer that never reads its responses cannot grow memory: reading pauses while the write buffer is full, and the session is closed beyond `maxWriteBuffer` (1 MiB).
 - Proxy Protocol v1 and v2, off by default: `proxyProtocol: { trustedProxies: ['10.0.0.0/8'] }`. A PROXY header from an unlisted address is rejected.
 
 ## Utilities

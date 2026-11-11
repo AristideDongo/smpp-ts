@@ -18,8 +18,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          registry-url: https://registry.npmjs.org
+          # No `registry-url`: it writes an .npmrc with `always-auth` (unknown to npm 11) and a placeholder
+          # token. changesets/action handles npm Trusted Publishing (OIDC) on its own.
       # Trusted Publishing (OIDC): npm ≥ 11.5.1, no stored token, no 2FA code.
+      # Requires a trusted publisher on npmjs.com: package smpp-ts → Settings → Trusted publishing →
+      # GitHub Actions, repository AristideDongo/smpp-ts, workflow release.yml.
       - run: npm install -g npm@11
       - run: npm ci
       - uses: changesets/action@v1

@@ -79,14 +79,39 @@ export interface SmppServerOptions<Ctx = unknown> {
 
   /** An open but unbound session is closed after this delay. Default: 30 s. */
   bindTimeout?: number;
+  /** Maximum duration of the TLS handshake. Default: 10 s. */
+  handshakeTimeout?: number;
   /** A bound session without traffic is closed after this delay. Default: 5 min. 0 = disabled. */
   idleTimeout?: number;
   /** Maximum handler time before an automatic ESME_RSYSERR response. Default: 10 s. */
   handlerTimeout?: number;
+  /**
+   * Maximum number of connections, counted from the moment they are accepted
+   * (PROXY header and TLS handshake included). Default: 1000.
+   */
   maxSessions?: number;
+  /** Maximum number of connections per IP, counted like `maxSessions`. Default: 50. */
   maxSessionsPerIp?: number;
+  /** Maximum number of bound sessions per system_id, binds in progress included. Default: 10. */
   maxSessionsPerSystemId?: number;
+  /**
+   * Failed binds tolerated per IP before a temporary ban. Brute force on one system_id
+   * from many addresses must be handled in `authenticate()`.
+   */
   bindFailures?: BindFailurePolicy;
+  /**
+   * Maximum number of incoming requests handled at the same time per session
+   * (handlers that have not answered yet). Default: 10.
+   */
+  inboundWindow?: number;
+  /**
+   * What happens when the inbound window is full:
+   * - `pause` (default): reading stops until a handler answers (TCP backpressure);
+   * - `throttle`: extra requests are answered at once with ESME_RTHROTTLED.
+   */
+  inboundWindowPolicy?: 'pause' | 'throttle';
+  /** Bytes allowed in a session's write buffer before it is closed. Default: 1 MiB. */
+  maxWriteBuffer?: number;
 
   /** Proxy Protocol v1/v2. Disabled by default. */
   proxyProtocol?: ProxyProtocolOptions;
@@ -125,7 +150,11 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
   private readonly failures: BindFailureTracker;
   private readonly trusted: CidrList | undefined;
   private readonly secureContext: tls.SecureContext | undefined;
+  /** Accepted connections, whatever their stage (PROXY header, TLS handshake, session). */
+  private connections = 0;
   private readonly perIp = new Map<string, number>();
+  /** Binds being authenticated, per system_id: they hold a slot of maxSessionsPerSystemId. */
+  private readonly pendingBinds = new Map<string, number>();
   private readonly handlers: Handlers<Ctx>;
   private rr = 0;
 
@@ -223,11 +252,18 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     socket.destroy();
   }
 
-  private admissible(ip: string): string | undefined {
+  /** Checks the limits before counting a new connection (`checkTotal`) or moving it to another IP. */
+  private admissible(ip: string, checkTotal = true): string | undefined {
     if (this.failures.isBanned(ip)) return 'banned after repeated bind failures';
-    if (this.sessions.size >= (this.options.maxSessions ?? 1000)) return 'maxSessions reached';
+    if (checkTotal && this.connections >= (this.options.maxSessions ?? 1000)) return 'maxSessions reached';
     if ((this.perIp.get(ip) ?? 0) >= (this.options.maxSessionsPerIp ?? 50)) return 'maxSessionsPerIp reached';
     return undefined;
+  }
+
+  private countIp(ip: string, delta: 1 | -1): void {
+    const n = (this.perIp.get(ip) ?? 0) + delta;
+    if (n <= 0) this.perIp.delete(ip);
+    else this.perIp.set(ip, n);
   }
 
   private async onConnection(socket: net.Socket): Promise<void> {
@@ -236,6 +272,15 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     const early = this.admissible(ip);
     if (early) return this.reject(socket, ip, early);
 
+    // Counted from now until the socket closes, whatever stage it reaches (handshake, PROXY header…).
+    this.connections++;
+    this.countIp(ip, 1);
+    let countedIp: string = ip;
+    socket.once('close', () => {
+      this.connections--;
+      this.countIp(countedIp, -1);
+    });
+
     let stream: Duplex = socket;
     if (this.trusted) {
       const timeout = this.options.proxyProtocol?.headerTimeout ?? 5_000;
@@ -243,8 +288,13 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
         const header = await readProxyHeader(socket, timeout);
         if (header.command === 'PROXY' && header.sourceAddress) {
           ip = normalizeIp(header.sourceAddress);
-          const late = this.admissible(ip);
-          if (late) return this.reject(socket, ip, late);
+          if (ip !== countedIp) {
+            const late = this.admissible(ip, false);
+            if (late) return this.reject(socket, ip, late);
+            this.countIp(countedIp, -1);
+            this.countIp(ip, 1);
+            countedIp = ip;
+          }
         }
         // The bytes after the header were pushed back into the stream: TLS must read through a JS stream.
         if (this.secureContext) stream = Duplex.from({ readable: socket, writable: socket });
@@ -265,7 +315,7 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
       await new Promise<void>((resolve, reject) => {
         const t = setTimeout(
           () => reject(new SmppError('SMPP_TLS', 'TLS handshake timeout')),
-          this.options.bindTimeout ?? 30_000,
+          this.options.handshakeTimeout ?? 10_000,
         );
         tlsSocket.once('secure', () => {
           clearTimeout(t);
@@ -296,11 +346,11 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
       enquireLinkTimeout: o.enquireLinkTimeout ?? 10_000,
       unbindTimeout: o.unbindTimeout ?? 5_000,
       idleTimeout: o.idleTimeout ?? 5 * 60_000,
+      ...(o.maxWriteBuffer !== undefined ? { maxWriteBuffer: o.maxWriteBuffer } : {}),
       logContext: { remoteAddress: ip },
     });
     const ss = new ServerSession<Ctx>(session, ip);
     this.sessions.add(ss);
-    this.perIp.set(ip, (this.perIp.get(ip) ?? 0) + 1);
 
     // SEC-05: an unbound session is closed after bindTimeout.
     const bindTimer = setTimeout(() => {
@@ -311,8 +361,35 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     }, o.bindTimeout ?? 30_000);
     bindTimer.unref?.();
 
+    // Inbound window: bounds the handlers running at the same time for this session.
+    const inboundWindow = Math.max(1, o.inboundWindow ?? 10);
+    const throttle = o.inboundWindowPolicy === 'throttle';
+    let active = 0;
+    let windowPaused = false;
     session.on('pdu', (pdu) => {
-      void this.onPdu(ss, pdu);
+      if (bindModeOf(pdu.command) || !responseNameOf(pdu.command)) {
+        void this.onPdu(ss, pdu);
+        return;
+      }
+      if (active >= inboundWindow) {
+        // Only reachable with `throttle`: with `pause`, reading stopped when the window filled up.
+        session.respond(pdu as { command: RequestCommandName; sequence_number: number }, {
+          command_status: COMMAND_STATUS.ESME_RTHROTTLED,
+        });
+        return;
+      }
+      active++;
+      if (!throttle && active >= inboundWindow && !session.isPaused) {
+        windowPaused = true;
+        session.pause();
+      }
+      void this.onPdu(ss, pdu).finally(() => {
+        active--;
+        if (windowPaused && active < inboundWindow) {
+          windowPaused = false;
+          session.resume();
+        }
+      });
     });
     session.on('metric', (m) => {
       if (this.listenerCount('metric') > 0) this.emit('metric', m, ss);
@@ -321,9 +398,6 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     session.on('close', () => {
       clearTimeout(bindTimer);
       this.sessions.delete(ss);
-      const n = (this.perIp.get(ip) ?? 1) - 1;
-      if (n <= 0) this.perIp.delete(ip);
-      else this.perIp.set(ip, n);
       this.emitSafe('sessionClose', ss);
     });
     this.emitSafe('session', ss);
@@ -361,8 +435,14 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
           );
         }),
       ]);
-      if (typeof result === 'number') ss.session.respond(req, { command_status: result });
-      else ss.session.respond(req, (result ?? {}) as never);
+      try {
+        if (typeof result === 'number') ss.session.respond(req, { command_status: result });
+        else ss.session.respond(req, (result ?? {}) as never);
+      } catch (err) {
+        // The handler returned fields that cannot be encoded: the peer still gets an answer.
+        this.logger.warn(`${command} handler returned an invalid response`, { error: toError(err).message });
+        ss.session.respond(req, { command_status: COMMAND_STATUS.ESME_RSYSERR });
+      }
     } catch (err) {
       const status = statusOf(err);
       this.logger.warn(`${command} handler failed`, { error: toError(err).message, status });
@@ -381,9 +461,19 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     const ip = ss.remoteAddress;
     session.pause(); // keeps ordering during asynchronous authentication (REL-09)
     let accepted: boolean | Ctx = false;
+    const systemId = pdu.system_id;
+    // The slot is reserved before authenticate() resolves: concurrent binds cannot exceed the limit.
+    const perSystem = this.options.maxSessionsPerSystemId ?? 10;
+    const reserved = this.sessionsFor(systemId).length + (this.pendingBinds.get(systemId) ?? 0) < perSystem;
+    if (reserved) this.pendingBinds.set(systemId, (this.pendingBinds.get(systemId) ?? 0) + 1);
+    const releaseSlot = () => {
+      if (!reserved) return;
+      const n = (this.pendingBinds.get(systemId) ?? 1) - 1;
+      if (n <= 0) this.pendingBinds.delete(systemId);
+      else this.pendingBinds.set(systemId, n);
+    };
     try {
-      const perSystem = this.options.maxSessionsPerSystemId ?? 10;
-      if (this.sessionsFor(pdu.system_id).length < perSystem) {
+      if (reserved) {
         const timeoutMs = this.options.handlerTimeout ?? 10_000;
         let timer: ReturnType<typeof setTimeout> | undefined;
         accepted = await Promise.race([
@@ -409,8 +499,12 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
       accepted = false;
     }
 
-    if (session.isClosed) return;
+    if (session.isClosed) {
+      releaseSlot();
+      return;
+    }
     if (accepted === false || accepted === null || accepted === undefined) {
+      releaseSlot();
       // Same response whether the system_id exists or not (SEC-06).
       const banned = this.failures.recordFailure(ip);
       this.logger.warn('bind rejected', { systemId: pdu.system_id, remoteAddress: ip, banned });
@@ -428,6 +522,7 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     if (pdu.interface_version >= 0x34) respParams.sc_interface_version = 0x50;
     session.respond(pdu, respParams);
     session.markBound(mode, pdu.system_id);
+    releaseSlot(); // the bound session now counts in sessionsFor()
     session.resume();
     this.logger.info('session bound', { systemId: pdu.system_id, remoteAddress: ip, mode });
     this.emitSafe('bind', ss);

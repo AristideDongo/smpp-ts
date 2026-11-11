@@ -77,11 +77,22 @@ export interface SessionOptions extends SessionTimeouts {
   id?: string;
   /** Context added to every log entry. */
   logContext?: Record<string, unknown>;
+  /**
+   * Bytes waiting in the socket write buffer beyond which the session is closed:
+   * a peer that sends requests without reading the responses cannot grow memory without limit.
+   * Default: 1 MiB. 0 = no limit (reading is still paused while the buffer is full).
+   */
+  maxWriteBuffer?: number;
 }
 
 export interface RequestOptions {
   /** Timeout for this request only. */
   timeout?: number;
+  /**
+   * Cancels the request. Aborted before it is written: rejected with `SmppAbortError` (`written: false`),
+   * safe to resend. Aborted while waiting for the response: rejected with `written: true`.
+   */
+  signal?: AbortSignal;
 }
 
 export interface SessionEvents {
@@ -133,9 +144,12 @@ export class Session extends EventEmitter<SessionEvents> {
   private readonly rateLimiter: TokenBucket | undefined;
   private readonly timeouts: Required<SessionTimeouts>;
   private readonly logContext: Record<string, unknown>;
+  private readonly maxWriteBuffer: number;
 
   private sequence = 0;
+  /** The socket write buffer is full: no new request is written and reading is paused (REL-09). */
   private writeBlocked = false;
+  /** Paused by the owner (asynchronous bind, inbound window). */
   private paused = false;
   private pendingFrames: Buffer[] = [];
   private lastReceived = Date.now();
@@ -174,6 +188,7 @@ export class Session extends EventEmitter<SessionEvents> {
       remoteAddress: socket.remoteAddress,
       ...options.logContext,
     };
+    this.maxWriteBuffer = options.maxWriteBuffer ?? 1024 * 1024;
     this.framer = new Framer(this.codec.maxPduLength);
     this.closedPromise = new Promise((r) => {
       this.resolveClosed = r;
@@ -189,6 +204,7 @@ export class Session extends EventEmitter<SessionEvents> {
     socket.on('drain', () => {
       this.writeBlocked = false;
       this.dispatch();
+      this.flushInput();
     });
     socket.on('error', (err: Error) => {
       this.closeError ??= err;
@@ -260,6 +276,8 @@ export class Session extends EventEmitter<SessionEvents> {
         encoded,
         timeoutMs,
         onTimeout: (req) => this.onRequestTimeout(req),
+        signal: options.signal,
+        onAbort: () => this.dispatch(),
       });
       this.queue.push(request);
       this.emitMetric({ name: 'queue.size', type: 'gauge', value: this.queue.size });
@@ -382,16 +400,31 @@ export class Session extends EventEmitter<SessionEvents> {
   resume(): void {
     if (!this.paused) return;
     this.paused = false;
+    this.flushInput();
+  }
+
+  get isPaused(): boolean {
+    return this.paused;
+  }
+
+  /** Incoming PDUs wait while the owner paused the session or the write buffer is full. */
+  private get inputHeld(): boolean {
+    return this.paused || this.writeBlocked;
+  }
+
+  /** Handles the frames held back, then resumes reading if nothing holds the input any more. */
+  private flushInput(): void {
+    if (this.closed) return;
     const frames = this.pendingFrames;
     this.pendingFrames = [];
     for (let i = 0; i < frames.length; i++) {
-      if (this.paused) {
+      if (this.inputHeld) {
         this.pendingFrames = frames.slice(i).concat(this.pendingFrames);
         return;
       }
       this.handleFrame(frames[i]!);
     }
-    if (!this.paused) this.socket.resume();
+    if (!this.inputHeld) this.socket.resume();
   }
 
   // ---------------------------------------------------------------- internal: sending
@@ -499,7 +532,20 @@ export class Session extends EventEmitter<SessionEvents> {
     if (this.closed || this.socket.destroyed) return;
     this.logPdu('sent', buf);
     const ok = this.socket.write(buf);
-    if (!ok) this.writeBlocked = true;
+    if (!ok && !this.writeBlocked) {
+      // Backpressure (REL-09): stop reading until the peer reads what we wrote, otherwise a peer
+      // that never reads its responses makes us buffer them in memory.
+      this.writeBlocked = true;
+      this.socket.pause();
+    }
+    const buffered = this.socket.writableLength;
+    if (this.maxWriteBuffer > 0 && buffered > this.maxWriteBuffer) {
+      this.log('error', 'write buffer limit exceeded, closing session', {
+        writableLength: buffered,
+        maxWriteBuffer: this.maxWriteBuffer,
+      });
+      this.destroy(new SmppError('SMPP_WRITE_BUFFER', `Write buffer over ${this.maxWriteBuffer} bytes`));
+    }
     this.emitMetric({ name: 'pdu.sent', type: 'counter', value: 1, labels: { command } });
     this.emitMetric({ name: 'bytes.out', type: 'counter', value: buf.length });
     if (isResponseCommand(command) && status !== 0) {
@@ -525,7 +571,7 @@ export class Session extends EventEmitter<SessionEvents> {
     this.emitMetric({ name: 'bytes.in', type: 'counter', value: chunk.length });
     const { frames, error } = this.framer.push(chunk);
     for (const frame of frames) {
-      if (this.paused) this.pendingFrames.push(frame);
+      if (this.inputHeld || this.pendingFrames.length > 0) this.pendingFrames.push(frame);
       else this.handleFrame(frame);
     }
     if (error) {
