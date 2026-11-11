@@ -1,6 +1,6 @@
 import net from 'node:net';
 import tls from 'node:tls';
-import { SmppError, SmppTimeoutError, toError } from '../errors.js';
+import { SmppAbortError, SmppError, SmppTimeoutError, toError } from '../errors.js';
 import { type Logger, silentLogger } from '../logger.js';
 
 export const DEFAULT_PORT = 2775;
@@ -85,12 +85,19 @@ export interface ConnectOptions {
   connectTimeout?: number;
   tls?: TlsClientOptions;
   logger?: Logger;
+  /** Aborts the connection attempt (`SmppAbortError`). */
+  signal?: AbortSignal | undefined;
 }
 
 /** Opens a TCP or TLS connection with a timeout. */
 export function connectSocket(endpoint: Endpoint, options: ConnectOptions = {}): Promise<net.Socket> {
   const timeoutMs = options.connectTimeout ?? 10_000;
   return new Promise((resolve, reject) => {
+    const signal = options.signal;
+    if (signal?.aborted) {
+      reject(new SmppAbortError(false, 'connect', { cause: signal.reason }));
+      return;
+    }
     const socket: net.Socket = endpoint.tls
       ? tls.connect(buildTlsOptions(endpoint, options.tls, options.logger))
       : net.connect({ host: endpoint.host, port: endpoint.port });
@@ -119,7 +126,14 @@ export function connectSocket(endpoint: Endpoint, options: ConnectOptions = {}):
         ),
       );
     };
+    const onAbort = () => {
+      cleanup();
+      socket.destroy();
+      reject(new SmppAbortError(false, 'connect', { cause: signal?.reason }));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
     const cleanup = () => {
+      signal?.removeEventListener('abort', onAbort);
       clearTimeout(timer);
       socket.off(readyEvent, onReady);
       socket.off('error', onError);

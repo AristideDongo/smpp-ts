@@ -87,6 +87,7 @@ export class InboundProcessor {
           body: content.body,
           dataCoding: pdu.data_coding,
           ...(content.udh?.shift ? { shift: content.udh.shift } : {}),
+          ...(content.udh?.locking ? { locking: content.udh.locking } : {}),
           meta: pdu,
         });
         if (done) this.sink.message(toInbound(done));

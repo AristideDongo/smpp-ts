@@ -1,6 +1,16 @@
 {
   "name": "@smpp-ts/smpp-ts",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "license": "MIT",
-  "exports": "./mod.ts"
+  "exports": {
+    ".": "./src/index.ts",
+    "./otel": "./src/otel/index.ts"
+  },
+  "publish": {
+    "include": [
+      "src/**/*.ts",
+      "README.md",
+      "LICENSE"
+    ]
+  }
 }
