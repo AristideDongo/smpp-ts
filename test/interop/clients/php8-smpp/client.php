@@ -28,9 +28,13 @@ $expected = json_decode((string)file_get_contents(__DIR__ . '/../expected.json')
 [, $host, $port] = $argv;
 
 /**
- * Records every submit_sm_resp message id (sendSMS() returns only the last segment's), and reads
- * receipts by their text: php8-smpp 0.1.1 types DeliveryReceipt::$id as int, which rejects
- * non-numeric message ids under strict_types.
+ * Works around three php8-smpp 0.1.1 behaviours (documented in test/interop/README.md):
+ * - sendSMS() returns only the last segment's message id: every submit_sm_resp id is recorded;
+ * - DeliveryReceipt::$id is typed int under strict_types, so no receipt can be parsed: the receipt id
+ *   is read from the receipt text;
+ * - with 8-bit UDH, the concatenation reference is taken again for each segment (it increments) and
+ *   only its second decimal digit is written: segments of one message may carry different references.
+ *   The reference is held constant while one message is sent.
  */
 final class InteropClient extends Client
 {
@@ -40,6 +44,13 @@ final class InteropClient extends Client
     public array $receipts = [];
     /** @var string[] */
     public array $mo = [];
+    /** Concatenation reference used for every segment of the message being sent. */
+    public ?int $fixedReference = null;
+
+    protected function getCsmsReference(): int
+    {
+        return $this->fixedReference ?? parent::getCsmsReference();
+    }
 
     protected function submitShortMessage(
         Address $source,
@@ -99,7 +110,9 @@ $client->bindTransceiver();
 $from = new Address('PHP', Smpp::TON_ALPHANUMERIC);
 $to = new Address('2250700000000', Smpp::TON_INTERNATIONAL, Smpp::NPI_E164);
 $client->sendSMS($from, $to, $expected['short']);
+$client->fixedReference = 142; // written as 4 (second decimal digit) in every segment
 $client->sendSMS($from, $to, $expected['long'], null, Smpp::DATA_CODING_UCS2);
+$client->fixedReference = null;
 
 $deadline = microtime(true) + 15;
 while (microtime(true) < $deadline
