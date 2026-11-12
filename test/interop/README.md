@@ -22,6 +22,8 @@ They are not part of `npm test`: without `SMPP_INTEROP_URL`, they are skipped.
 
 **php8-smpp 0.1.1 cannot read delivery receipts.** Its parser assigns the receipt id (a string) to `DeliveryReceipt::$id`, typed `int`, under `strict_types`: every receipt throws `Cannot assign string to property … of type int`, whatever the id. The test client catches it, answers the `deliver_sm` itself and reads the id from the receipt text. The PDUs sent by smpp-ts are standard (the same receipts pass with every other peer).
 
+**php8-smpp 0.1.1 can split a long message under several references.** With 8-bit UDH it takes the concatenation reference again for every segment (`getCsmsReference()` increments it) and writes only its second decimal digit (`substr((string)$ref, 1, 1)`): a message started at reference 47 sends its segments under 7, 8 and 9, and the receiving side, correctly, sees three different messages. The test client holds the reference constant while it sends one message.
+
 SMPPSim (Selenium Software) is not in the matrix: its original site is gone and no mirror offers a download we can check.
 
 ## Kannel (smpp-ts server)
