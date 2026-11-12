@@ -148,16 +148,78 @@ export interface RequestQueueOptions {
  * Bounded queue of requests not written yet (REL-03): FIFO within a priority, higher priorities first,
  * with a starvation guard so that bulk traffic still moves while urgent traffic (OTP) flows.
  */
+/** FIFO with O(1) push and shift (an array with a moving head, compacted from time to time). */
+class Lane {
+  private items: Array<PendingRequest | undefined> = [];
+  /** Arrival ticket of each item, same index: the starvation guard serves the oldest. */
+  private tickets: number[] = [];
+  private head = 0;
+
+  get length(): number {
+    return this.items.length - this.head;
+  }
+
+  push(req: PendingRequest, ticket: number): void {
+    this.items.push(req);
+    this.tickets.push(ticket);
+  }
+
+  peek(): PendingRequest | undefined {
+    return this.items[this.head];
+  }
+
+  /** Ticket of the first item, `Infinity` when empty. */
+  peekTicket(): number {
+    return this.head < this.items.length ? this.tickets[this.head]! : Number.POSITIVE_INFINITY;
+  }
+
+  shift(): PendingRequest | undefined {
+    if (this.head >= this.items.length) return undefined;
+    const req = this.items[this.head];
+    this.items[this.head] = undefined;
+    this.head++;
+    if (this.head === this.items.length) {
+      this.items = [];
+      this.tickets = [];
+      this.head = 0;
+    } else if (this.head >= 1024 && this.head * 2 >= this.items.length) {
+      this.items = this.items.slice(this.head);
+      this.tickets = this.tickets.slice(this.head);
+      this.head = 0;
+    }
+    return req;
+  }
+
+  /** Removes one item (abort or timeout while queued: rare). */
+  remove(req: PendingRequest): boolean {
+    const i = this.items.indexOf(req, this.head);
+    if (i === -1) return false;
+    this.items.splice(i, 1);
+    this.tickets.splice(i, 1);
+    return true;
+  }
+
+  drain(): PendingRequest[] {
+    const out = this.items.slice(this.head) as PendingRequest[];
+    this.items = [];
+    this.tickets = [];
+    this.head = 0;
+    return out;
+  }
+}
+
+/**
+ * Bounded queue of requests not written yet (REL-03): FIFO within a priority, higher priorities first,
+ * with a starvation guard so that bulk traffic still moves while urgent traffic (OTP) flows.
+ */
 export class RequestQueue {
   readonly maxSize: number;
   private readonly fairness: number;
   /** One FIFO per priority, index = priority. */
-  private lanes: PendingRequest[][] = Array.from({ length: PRIORITY_LEVELS }, () => []);
+  private readonly lanes: Lane[] = Array.from({ length: PRIORITY_LEVELS }, () => new Lane());
   private count = 0;
   /** Requests taken in a row from a higher lane while a lower one was waiting. */
   private streak = 0;
-  /** Arrival order, to pick the longest-waiting request when the starvation guard fires. */
-  private readonly arrival = new WeakMap<PendingRequest, number>();
   private ticket = 0;
 
   constructor(options: number | RequestQueueOptions = {}) {
@@ -186,21 +248,23 @@ export class RequestQueue {
     }
     req.phase = 'queued';
     req.release = () => this.remove(req);
-    this.lanes[req.priority]!.push(req);
-    this.arrival.set(req, this.ticket++);
+    this.lanes[req.priority]!.push(req, this.ticket++);
     this.count++;
   }
 
-  /** Lane the next request comes from (no side effect: `peek` and `shift` agree). */
-  private nextLane(): number | undefined {
-    const top = this.topLane();
-    if (top === undefined || this.fairness === 0 || this.streak < this.fairness) return top;
+  private topLane(): number {
+    for (let p = PRIORITY_LEVELS - 1; p >= 0; p--) if (this.lanes[p]!.length > 0) return p;
+    return -1;
+  }
+
+  /** Lane the next request comes from, -1 when empty (no side effect: `peek` and `shift` agree). */
+  private nextLane(top: number): number {
+    if (top <= 0 || this.fairness === 0 || this.streak < this.fairness) return top;
     // Starvation guard: the request that has waited longest among the lower priorities.
     let chosen = top;
     let oldest = Number.POSITIVE_INFINITY;
     for (let p = top - 1; p >= 0; p--) {
-      const head = this.lanes[p]![0];
-      const t = head ? (this.arrival.get(head) ?? 0) : Number.POSITIVE_INFINITY;
+      const t = this.lanes[p]!.peekTicket();
       if (t < oldest) {
         oldest = t;
         chosen = p;
@@ -209,46 +273,43 @@ export class RequestQueue {
     return chosen;
   }
 
-  private topLane(): number | undefined {
-    for (let p = PRIORITY_LEVELS - 1; p >= 0; p--) if (this.lanes[p]!.length > 0) return p;
-    return undefined;
-  }
-
   peek(): PendingRequest | undefined {
-    const lane = this.nextLane();
-    return lane === undefined ? undefined : this.lanes[lane]![0];
+    const lane = this.nextLane(this.topLane());
+    return lane === -1 ? undefined : this.lanes[lane]!.peek();
   }
 
   shift(): PendingRequest | undefined {
     const top = this.topLane();
-    const lane = this.nextLane();
-    if (lane === undefined || top === undefined) return undefined;
+    if (top === -1) return undefined;
+    const lane = this.nextLane(top);
     const req = this.lanes[lane]!.shift();
     if (!req) return undefined;
     this.count--;
     req.release = undefined;
     if (lane < top) {
       this.streak = 0; // the guard just served a lower priority
-    } else {
-      const lowerWaiting = this.lanes.some((l, p) => p < lane && l.length > 0);
+    } else if (lane > 0) {
+      let lowerWaiting = false;
+      for (let p = 0; p < lane; p++) {
+        if (this.lanes[p]!.length > 0) {
+          lowerWaiting = true;
+          break;
+        }
+      }
       this.streak = lowerWaiting ? this.streak + 1 : 0;
+    } else {
+      this.streak = 0;
     }
     return req;
   }
 
   remove(req: PendingRequest): void {
-    const lane = this.lanes[req.priority]!;
-    const i = lane.indexOf(req);
-    if (i !== -1) {
-      lane.splice(i, 1);
-      this.count--;
-    }
+    if (this.lanes[req.priority]!.remove(req)) this.count--;
   }
 
-  /** Rejects every queued request. */
+  /** Rejects every queued request, oldest first. */
   rejectAll(makeError: (req: PendingRequest) => Error): void {
-    const items = this.lanes.flat();
-    this.lanes = Array.from({ length: PRIORITY_LEVELS }, () => []);
+    const items = this.lanes.flatMap((l) => l.drain());
     this.count = 0;
     this.streak = 0;
     for (const req of items) {

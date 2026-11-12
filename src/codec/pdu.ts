@@ -94,6 +94,10 @@ export const DEFAULT_MAX_PDU_LENGTH = 16_384;
 
 type AnyRecord = Record<string, unknown>;
 
+/** Standard TLVs in table order, and the position of each name: TLVs are written in this order. */
+const STANDARD_TLV_LIST = Object.entries(TLVS) as [string, TlvDefinition][];
+const STANDARD_TLV_INDEX = new Map<string, number>(STANDARD_TLV_LIST.map(([name], i) => [name, i]));
+
 const STANDARD_TLVS_BY_TAG = new Map<number, [string, TlvDefinition]>(
   (Object.entries(TLVS) as [string, TlvDefinition][]).map(([name, def]) => [def.tag, [name, def]]),
 );
@@ -213,10 +217,20 @@ export class PduCodec {
   }
 
   private encodeTlvs(w: Writer, params: AnyRecord): void {
-    for (const [name, def] of Object.entries(TLVS) as [string, TlvDefinition][]) {
-      const value = params[name];
-      if (value === undefined) continue;
-      this.encodeTlvValues(w, name, def, value);
+    // Only the parameters actually given are looked at (a PDU carries a handful of keys, the table has
+    // about a hundred TLVs), then written in table order, as before.
+    let present: number[] | undefined;
+    for (const key in params) {
+      const index = STANDARD_TLV_INDEX.get(key);
+      if (index === undefined || params[key] === undefined) continue;
+      (present ??= []).push(index);
+    }
+    if (present) {
+      if (present.length > 1) present.sort((a, b) => a - b);
+      for (const index of present) {
+        const [name, def] = STANDARD_TLV_LIST[index]!;
+        this.encodeTlvValues(w, name, def, params[name]);
+      }
     }
     const custom = params.custom_tlvs as AnyRecord | undefined;
     if (custom) {

@@ -131,6 +131,12 @@ export interface SmppClientOptions {
   normalize?: false | NormalizeMode;
   /** Automatically answers deliver_sm_resp / data_sm_resp (status 0). Default: true. */
   autoAck?: boolean;
+  /**
+   * With `autoAck: false`: incoming deliver_sm / data_sm the application has not answered yet, per
+   * session. Beyond, new ones are answered at once with ESME_RX_T_APPN (the SMSC delivers them again
+   * later) and not emitted, so a slow or stuck consumer cannot grow memory. Default: 1000.
+   */
+  maxPendingInbound?: number;
   /** message_id normalization for delivery receipts. Default: `as-is`. */
   messageIdFormat?: MessageIdFormat;
   /** Normalization and validation of `sendText` addresses (numbers, alphanumeric sender). */
@@ -320,6 +326,9 @@ export class SmppClient extends EventEmitter<ClientEvents> {
   private reconnectAttempt = 0;
   private boundAt: number | undefined;
   private rebinding: Promise<void> | undefined;
+  /** Session each unanswered incoming PDU came on (`autoAck: false`): the answer goes back there. */
+  private readonly pendingInbound = new WeakMap<object, Session>();
+  private readonly pendingCount = new WeakMap<Session, number>();
 
   constructor(options: SmppClientOptions, internals: ClientInternals = {}) {
     super();
@@ -885,16 +894,52 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     return this.request('replace_sm', { ...params, message_id: messageId }, options);
   }
 
-  /** Answers a deliver_sm / data_sm manually (with `autoAck: false`). */
+  /**
+   * Answers a deliver_sm / data_sm manually (with `autoAck: false`), on the session it arrived on.
+   * Answering twice, or after that session closed, does nothing: the SMSC delivers again a PDU it got
+   * no answer for, on the new session.
+   */
   respond(pdu: DeliverSm | DataSm, params: { command_status?: number; message_id?: string } = {}): void {
+    const origin = this.pendingInbound.get(pdu);
+    if (origin) {
+      this.pendingInbound.delete(pdu);
+      this.pendingCount.set(origin, Math.max(0, (this.pendingCount.get(origin) ?? 1) - 1));
+      if (!origin.isClosed) origin.respond(pdu, params);
+      return;
+    }
+    // Not received through this client (or already answered): best effort on the current session.
     const session = this.session;
     if (!session) throw new SmppStateError('respond', 'CLOSED');
     session.respond(pdu, params);
   }
 
+  /** @internal The PDU arrived through this client and is still unanswered (used by `SmppPool`). */
+  isPendingInbound(pdu: object): boolean {
+    return this.pendingInbound.has(pdu);
+  }
+
+  /** Incoming PDUs waiting for `respond()` on the current session (`autoAck: false`). */
+  get pendingInboundCount(): number {
+    return this.session ? (this.pendingCount.get(this.session) ?? 0) : 0;
+  }
+
   // ---------------------------------------------------------------- receiving
 
   private onPdu(session: Session, pdu: Pdu): void {
+    const autoAck = this.options.autoAck ?? true;
+    if (!autoAck && (pdu.command === 'deliver_sm' || pdu.command === 'data_sm')) {
+      const pending = this.pendingCount.get(session) ?? 0;
+      if (pending >= (this.options.maxPendingInbound ?? 1000)) {
+        this.logger.warn('too many unanswered incoming messages, asking the SMSC to retry later', {
+          pending,
+          sequence_number: pdu.sequence_number,
+        });
+        session.respond(pdu, { command_status: COMMAND_STATUS.ESME_RX_T_APPN });
+        return;
+      }
+      this.pendingCount.set(session, pending + 1);
+      this.pendingInbound.set(pdu, session);
+    }
     switch (pdu.command) {
       case 'deliver_sm':
         this.emitSafe('deliver', pdu);
@@ -915,7 +960,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
         }
         return;
     }
-    if (this.options.autoAck ?? true) session.respond(pdu, {});
+    if (autoAck) session.respond(pdu, {});
   }
 
   // ---------------------------------------------------------------- helpers
