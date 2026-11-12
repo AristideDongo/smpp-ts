@@ -131,7 +131,12 @@ describe('deduplication', () => {
 
   it('uses a custom store', () => {
     const keys: string[] = [];
-    const d = new Deduplicator({ store: { seen: (k) => (keys.includes(k) ? true : (keys.push(k), false)) } });
+    const seen = (k: string) => {
+      if (keys.includes(k)) return true;
+      keys.push(k);
+      return false;
+    };
+    const d = new Deduplicator({ store: { seen } });
     d.receipt('1', 'DELIVRD', 'p');
     expect(d.receipt('1', 'DELIVRD', 'p')).toBe(true);
     expect(keys).toHaveLength(1);
