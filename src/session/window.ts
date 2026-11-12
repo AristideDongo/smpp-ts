@@ -16,6 +16,8 @@ export interface PendingRequest {
   writtenAt?: number;
   /** Control request (bind, unbind, enquire_link): outside the window and the queue. */
   readonly control: boolean;
+  /** Queue priority, 0 (lowest, default) to 3: higher priorities leave the queue first. */
+  readonly priority: number;
   readonly timeoutMs: number;
   /** Absolute deadline (epoch ms); `Infinity` without a timeout. */
   readonly deadline: number;
@@ -32,6 +34,8 @@ export interface CreateRequestOptions {
   encoded: Buffer;
   timeoutMs: number;
   control?: boolean;
+  /** Queue priority, 0 to 3 (clamped). Default: 0. */
+  priority?: number | undefined;
   onTimeout?: (req: PendingRequest) => void;
   /** Cancels the request (`SmppAbortError`). */
   signal?: AbortSignal | undefined;
@@ -67,6 +71,7 @@ export function createPendingRequest(opts: CreateRequestOptions): {
     phase: 'queued',
     written: false,
     control: opts.control ?? false,
+    priority: clampPriority(opts.priority),
     timeoutMs: opts.timeoutMs,
     deadline:
       opts.timeoutMs > 0 && Number.isFinite(opts.timeoutMs)
@@ -120,20 +125,60 @@ export function expireRequest(request: PendingRequest, onTimeout?: (req: Pending
   onTimeout?.(request);
 }
 
-/** Bounded FIFO queue of requests not written yet (REL-03). */
-export class RequestQueue {
-  private items: PendingRequest[] = [];
+/** Number of priority levels (same range as `priority_flag`: 0 to 3). */
+export const PRIORITY_LEVELS = 4;
 
-  constructor(readonly maxSize = 10_000) {}
+/** Clamps a priority to 0..3 (integer). */
+export function clampPriority(priority: number | undefined): number {
+  if (priority === undefined || !Number.isFinite(priority)) return 0;
+  return Math.min(PRIORITY_LEVELS - 1, Math.max(0, Math.trunc(priority)));
+}
+
+export interface RequestQueueOptions {
+  /** Maximum number of queued requests, all priorities together. Default: 10 000. */
+  maxSize?: number;
+  /**
+   * Starvation guard: after this many requests taken in a row from a higher priority while a lower one
+   * waits, one request of the next waiting priority goes out. 0 = strict priority. Default: 10.
+   */
+  fairness?: number;
+}
+
+/**
+ * Bounded queue of requests not written yet (REL-03): FIFO within a priority, higher priorities first,
+ * with a starvation guard so that bulk traffic still moves while urgent traffic (OTP) flows.
+ */
+export class RequestQueue {
+  readonly maxSize: number;
+  private readonly fairness: number;
+  /** One FIFO per priority, index = priority. */
+  private lanes: PendingRequest[][] = Array.from({ length: PRIORITY_LEVELS }, () => []);
+  private count = 0;
+  /** Requests taken in a row from a higher lane while a lower one was waiting. */
+  private streak = 0;
+  /** Arrival order, to pick the longest-waiting request when the starvation guard fires. */
+  private readonly arrival = new WeakMap<PendingRequest, number>();
+  private ticket = 0;
+
+  constructor(options: number | RequestQueueOptions = {}) {
+    const o = typeof options === 'number' ? { maxSize: options } : options;
+    this.maxSize = o.maxSize ?? 10_000;
+    this.fairness = Math.max(0, o.fairness ?? 10);
+  }
 
   get size(): number {
-    return this.items.length;
+    return this.count;
+  }
+
+  /** Queued requests per priority (index = priority). */
+  get sizes(): number[] {
+    return this.lanes.map((l) => l.length);
   }
 
   /** Adds a request; rejects it at once with `SmppQueueFullError` if the queue is full. */
   push(req: PendingRequest): void {
     if (req.phase === 'done') return; // already settled (aborted before being queued)
-    if (this.items.length >= this.maxSize) {
+    if (this.count >= this.maxSize) {
       // The request never enters the queue: disarm its timer so no orphan rejection fires.
       req.clear();
       req.phase = 'done';
@@ -141,28 +186,71 @@ export class RequestQueue {
     }
     req.phase = 'queued';
     req.release = () => this.remove(req);
-    this.items.push(req);
+    this.lanes[req.priority]!.push(req);
+    this.arrival.set(req, this.ticket++);
+    this.count++;
+  }
+
+  /** Lane the next request comes from (no side effect: `peek` and `shift` agree). */
+  private nextLane(): number | undefined {
+    const top = this.topLane();
+    if (top === undefined || this.fairness === 0 || this.streak < this.fairness) return top;
+    // Starvation guard: the request that has waited longest among the lower priorities.
+    let chosen = top;
+    let oldest = Number.POSITIVE_INFINITY;
+    for (let p = top - 1; p >= 0; p--) {
+      const head = this.lanes[p]![0];
+      const t = head ? (this.arrival.get(head) ?? 0) : Number.POSITIVE_INFINITY;
+      if (t < oldest) {
+        oldest = t;
+        chosen = p;
+      }
+    }
+    return chosen;
+  }
+
+  private topLane(): number | undefined {
+    for (let p = PRIORITY_LEVELS - 1; p >= 0; p--) if (this.lanes[p]!.length > 0) return p;
+    return undefined;
   }
 
   peek(): PendingRequest | undefined {
-    return this.items[0];
+    const lane = this.nextLane();
+    return lane === undefined ? undefined : this.lanes[lane]![0];
   }
 
   shift(): PendingRequest | undefined {
-    const req = this.items.shift();
-    if (req) req.release = undefined;
+    const top = this.topLane();
+    const lane = this.nextLane();
+    if (lane === undefined || top === undefined) return undefined;
+    const req = this.lanes[lane]!.shift();
+    if (!req) return undefined;
+    this.count--;
+    req.release = undefined;
+    if (lane < top) {
+      this.streak = 0; // the guard just served a lower priority
+    } else {
+      const lowerWaiting = this.lanes.some((l, p) => p < lane && l.length > 0);
+      this.streak = lowerWaiting ? this.streak + 1 : 0;
+    }
     return req;
   }
 
   remove(req: PendingRequest): void {
-    const i = this.items.indexOf(req);
-    if (i !== -1) this.items.splice(i, 1);
+    const lane = this.lanes[req.priority]!;
+    const i = lane.indexOf(req);
+    if (i !== -1) {
+      lane.splice(i, 1);
+      this.count--;
+    }
   }
 
   /** Rejects every queued request. */
   rejectAll(makeError: (req: PendingRequest) => Error): void {
-    const items = this.items;
-    this.items = [];
+    const items = this.lanes.flat();
+    this.lanes = Array.from({ length: PRIORITY_LEVELS }, () => []);
+    this.count = 0;
+    this.streak = 0;
     for (const req of items) {
       req.release = undefined;
       req.reject(makeError(req));

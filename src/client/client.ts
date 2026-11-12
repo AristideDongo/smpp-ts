@@ -9,6 +9,7 @@ import {
   type PduParams,
 } from '../codec/pdu.js';
 import type { NationalLanguage } from '../encoding/gsm7.js';
+import type { NormalizeMode } from '../encoding/normalize.js';
 import { type EncodingRegistry, encodings } from '../encoding/registry.js';
 import {
   SmppAbortError,
@@ -36,12 +37,14 @@ import {
   parseSmppUrl,
 } from '../transport/connection.js';
 import { type AddressOptions, resolveAddress } from '../utils/address.js';
+import { type DedupOptions, Deduplicator, type DuplicateKind } from '../utils/dedup.js';
 import {
   DeliveryTracker,
   type DeliveryTrackerOptions,
   type MessageStatus,
 } from '../utils/delivery-tracker.js';
 import type { DeliveryReport, MessageIdFormat } from '../utils/dlr.js';
+import { type TextEstimate, estimateText, prepareText } from '../utils/estimate.js';
 import { buildParts } from '../utils/multipart.js';
 import type { MultipartStrategy } from '../utils/segments.js';
 import { formatAbsoluteTime, formatRelativeTime } from '../utils/time.js';
@@ -84,6 +87,16 @@ export interface SmppClientOptions {
   window?: number;
   /** Send queue size. Default: 10 000. */
   maxQueueSize?: number;
+  /**
+   * Starvation guard of the priority queue: after this many requests in a row from a higher priority
+   * while a lower one waits, one lower-priority request goes out. 0 = strict priority. Default: 10.
+   */
+  queueFairness?: number;
+  /**
+   * SMPP 5.0 `congestion_state` (0-100) from which the rate limiter slows down, as on ESME_RTHROTTLED.
+   * Needs `rateLimit`. Default: 90. 0 disables it.
+   */
+  congestionThreshold?: number;
   rateLimit?: RateLimitOptions;
   /** Automatic reconnection. Default: enabled, unlimited attempts. */
   reconnect?: boolean | ReconnectOptions;
@@ -105,6 +118,17 @@ export interface SmppClientOptions {
   /** Partially masks phone numbers in logs. */
   redactNumbers?: boolean;
 
+  /**
+   * Drops receipts and incoming messages the SMSC sends again (it did not get our response, e.g. the
+   * connection dropped). Receipts: on by default; messages: off. `false` disables both.
+   */
+  dedup?: boolean | DedupOptions;
+  /**
+   * GSM7 normalization of `sendText` texts: curly quotes, dashes, special spaces… (`punctuation`), and
+   * also accented letters missing from GSM7 (`transliterate`). Applied only when it saves segments.
+   * Default: `false` (texts are sent as they are).
+   */
+  normalize?: false | NormalizeMode;
   /** Automatically answers deliver_sm_resp / data_sm_resp (status 0). Default: true. */
   autoAck?: boolean;
   /** message_id normalization for delivery receipts. Default: `as-is`. */
@@ -168,7 +192,13 @@ export interface SendTextOptions {
   sourceNpi?: number;
   destTon?: number;
   destNpi?: number;
+  /**
+   * `priority_flag` (0 to 3), also the local queue priority: a higher priority leaves the send queue
+   * first (an OTP before a bulk campaign).
+   */
   priority?: number;
+  /** Overrides the client's `normalize` option for this message. */
+  normalize?: false | NormalizeMode;
   /** Extra submit_sm parameters (TLVs…). */
   params?: PduParams<'submit_sm'>;
   timeout?: number;
@@ -189,6 +219,38 @@ export interface SendTextResult {
   messageIds: string[];
   parts: number;
   encoding: string;
+  /** Characters replaced by GSM7 normalization (0 when the text was sent as it is). */
+  replacements: number;
+}
+
+/** Text and options `estimate` takes: the encoding-related subset of `SendTextOptions`. */
+export type EstimateOptions = Pick<
+  SendTextOptions,
+  'text' | 'encoding' | 'shift' | 'locking' | 'strategy' | 'normalize'
+>;
+
+/** Snapshot of a client's health, e.g. for a readiness probe. */
+export interface ClientHealth {
+  /** Bound and able to send or receive. */
+  healthy: boolean;
+  state: SessionState;
+  /** Reconnecting after a connection loss. */
+  reconnecting: boolean;
+  /** Current reconnection attempt (0 when not reconnecting). */
+  reconnectAttempt: number;
+  inflight: number;
+  queued: number;
+  /** Queued requests per priority (index = priority, 0 to 3). */
+  queuedByPriority: number[];
+  /** Time (epoch ms) of the last bytes received from the SMSC, if connected. */
+  lastReceivedAt?: number;
+  /** Time (epoch ms) of the last successful bind. */
+  boundAt?: number;
+  /** Last SMPP 5.0 `congestion_state` reported by the SMSC. */
+  congestionState?: number;
+  /** Current rate limit (PDUs/s), lowered after throttling or congestion. */
+  rateLimit?: number;
+  trackedMessages: number;
 }
 
 export interface ClientEvents {
@@ -202,6 +264,8 @@ export interface ClientEvents {
   messageStatus: [status: MessageStatus];
   message: [message: InboundMessage];
   partialMessage: [message: InboundMessage];
+  /** A receipt or message already processed was received again and dropped (`dedup` option). */
+  duplicate: [kind: DuplicateKind, pdu: DeliverSm | DataSm];
   reconnecting: [attempt: number, delayMs: number];
   reconnected: [];
   reconnectFailed: [error: Error];
@@ -243,6 +307,8 @@ export class SmppClient extends EventEmitter<ClientEvents> {
   private readonly nextConcatRefFn: (() => number) | undefined;
   private readonly reconnectOptions: ReconnectOptions | undefined;
   private readonly retryOptions: RetryOptions | undefined;
+  /** Bind parameters (a copy: `updateBind` changes them for the next bind). */
+  private bindOptions: BindOptions;
 
   private session: Session | undefined;
   private connecting: Promise<void> | undefined;
@@ -251,6 +317,9 @@ export class SmppClient extends EventEmitter<ClientEvents> {
   private closing = false;
   private sleeper: { cancel: () => void } | undefined;
   private concatRef = Math.floor(Math.random() * 0x10000);
+  private reconnectAttempt = 0;
+  private boundAt: number | undefined;
+  private rebinding: Promise<void> | undefined;
 
   constructor(options: SmppClientOptions, internals: ClientInternals = {}) {
     super();
@@ -258,7 +327,10 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     this.logger = options.logger ?? silentLogger;
     this.endpoint = resolveEndpoint(options);
     this.tlsOptions = typeof options.tls === 'object' ? options.tls : undefined;
-    this.queue = new RequestQueue(options.maxQueueSize ?? 10_000);
+    this.queue = new RequestQueue({
+      maxSize: options.maxQueueSize ?? 10_000,
+      ...(options.queueFairness !== undefined ? { fairness: options.queueFairness } : {}),
+    });
     this.codec = new PduCodec(options.codec);
     this.registry = options.encodings ?? encodings;
     this.rateLimiter = options.rateLimit ? new TokenBucket(options.rateLimit) : undefined;
@@ -272,6 +344,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     if (!options.bind?.system_id || options.bind.password === undefined) {
       throw new SmppError('SMPP_CONFIG', 'bind.system_id and bind.password are required');
     }
+    this.bindOptions = { ...options.bind };
     this.ownsInbound = internals.inbound === undefined;
     this.inbound =
       internals.inbound ??
@@ -282,6 +355,9 @@ export class SmppClient extends EventEmitter<ClientEvents> {
           packedGsm7: options.packedGsm7 ?? false,
           messageIdFormat: options.messageIdFormat ?? 'as-is',
           ...(options.reassembly ? { reassembly: options.reassembly } : {}),
+          ...(options.dedup === false
+            ? {}
+            : { dedup: new Deduplicator(options.dedup === true ? {} : options.dedup) }),
           ...(options.trackDeliveries
             ? {
                 tracker: new DeliveryTracker((status) => this.emitSafe('messageStatus', status), {
@@ -296,6 +372,10 @@ export class SmppClient extends EventEmitter<ClientEvents> {
           deliveryReport: (dlr, pdu) => this.emitSafe('deliveryReport', dlr, pdu),
           message: (msg) => this.emitSafe('message', msg),
           partialMessage: (msg) => this.emitSafe('partialMessage', msg),
+          duplicate: (kind, pdu) => {
+            this.emit('metric', { name: 'inbound.duplicate', type: 'counter', value: 1, labels: { kind } });
+            this.emitSafe('duplicate', kind, pdu);
+          },
         },
       );
     this.nextConcatRefFn = internals.nextConcatRef ?? options.concatReference;
@@ -326,6 +406,27 @@ export class SmppClient extends EventEmitter<ClientEvents> {
   /** In-flight requests. */
   get inflight(): number {
     return this.session?.inflightCount ?? 0;
+  }
+
+  /** Health snapshot (state, load, last traffic, congestion), e.g. for a Kubernetes readiness probe. */
+  health(): ClientHealth {
+    const session = this.session && !this.session.isClosed ? this.session : undefined;
+    const out: ClientHealth = {
+      healthy: this.isBound,
+      state: this.state,
+      reconnecting: this.reconnecting,
+      reconnectAttempt: this.reconnecting ? this.reconnectAttempt : 0,
+      inflight: this.inflight,
+      queued: this.queue.size,
+      queuedByPriority: this.queue.sizes,
+      trackedMessages: this.trackedMessages,
+    };
+    if (session) out.lastReceivedAt = session.lastReceivedAt;
+    if (this.boundAt !== undefined) out.boundAt = this.boundAt;
+    const congestion = session?.congestionState;
+    if (congestion !== undefined) out.congestionState = congestion;
+    if (this.rateLimiter) out.rateLimit = this.rateLimiter.currentRate;
+    return out;
   }
 
   // ---------------------------------------------------------------- connection
@@ -377,8 +478,9 @@ export class SmppClient extends EventEmitter<ClientEvents> {
         'unbindTimeout',
         'maxWriteBuffer',
         'sequenceGenerator',
+        'congestionThreshold',
       ]),
-      logContext: { systemId: o.bind.system_id, host: this.endpoint.host },
+      logContext: { systemId: this.bindOptions.system_id, host: this.endpoint.host },
     });
     this.session = session;
     session.on('stateChange', (from, to) => this.emitSafe('stateChange', from, to));
@@ -389,7 +491,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     session.on('pdu', (pdu) => this.onPdu(session, pdu));
     session.on('close', (err) => this.onSessionClose(session, err));
 
-    const { mode, ...bindParams } = o.bind;
+    const { mode, ...bindParams } = this.bindOptions;
     const onAbort = () => session.destroy();
     signal?.addEventListener('abort', onAbort, { once: true });
     try {
@@ -405,12 +507,15 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     } finally {
       signal?.removeEventListener('abort', onAbort);
     }
-    this.emitSafe('bound', o.bind.system_id);
+    this.boundAt = Date.now();
+    this.emitSafe('bound', this.bindOptions.system_id);
   }
 
   private onSessionClose(session: Session, err: Error | undefined): void {
     if (session !== this.session) return;
     this.session = undefined;
+    // A graceful re-bind reconnects by itself (and falls back on the reconnection loop on failure).
+    if (this.rebinding && !this.closing) return;
     if (this.closing || !this.reconnectOptions || !this.everBound) {
       if (!this.connecting) this.finalClose(err);
       return;
@@ -425,6 +530,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     let lastError = cause ?? new SmppConnectionClosedError(false, 'Connection lost');
     try {
       for (let attempt = 1; !this.closing; attempt++) {
+        this.reconnectAttempt = attempt;
         if (opts.maxAttempts !== undefined && attempt > opts.maxAttempts) {
           this.logger.error('reconnection failed', { attempts: attempt - 1, error: lastError.message });
           this.emitSafe('reconnectFailed', lastError);
@@ -452,7 +558,50 @@ export class SmppClient extends EventEmitter<ClientEvents> {
       }
     } finally {
       this.reconnecting = false;
+      this.reconnectAttempt = 0;
     }
+  }
+
+  /**
+   * Changes the bind parameters (password rotation, another system_type…). They apply from the next
+   * bind: the next reconnection, or `rebind()` to apply them now. The bind mode cannot change.
+   */
+  updateBind(params: Partial<Omit<BindOptions, 'mode'>>): void {
+    const next = { ...this.bindOptions, ...params, mode: this.bindOptions.mode };
+    if (!next.system_id || next.password === undefined) {
+      throw new SmppError('SMPP_CONFIG', 'bind.system_id and bind.password are required');
+    }
+    this.bindOptions = next;
+  }
+
+  /**
+   * Graceful re-bind with the current bind parameters (see `updateBind`): queued requests stay queued,
+   * in-flight ones get their response first (at most `timeout`, default `requestTimeout`), then the
+   * session unbinds and binds again. If the new bind fails, the usual reconnection takes over (and the
+   * returned Promise rejects with the bind error).
+   */
+  rebind(options: { timeout?: number } = {}): Promise<void> {
+    if (this.rebinding) return this.rebinding;
+    const session = this.session;
+    if (!session || session.isClosed || !this.isBound) {
+      return Promise.reject(new SmppStateError('rebind', this.state, COMMAND_STATUS.ESME_RINVBNDSTS));
+    }
+    this.rebinding = (async () => {
+      await session.holdAndDrain(options.timeout ?? this.options.requestTimeout ?? 10_000);
+      await session.close();
+      if (this.closing) return;
+      try {
+        await this.establish();
+        this.logger.info('rebound', { systemId: this.bindOptions.system_id });
+      } catch (err) {
+        if (!this.closing && this.reconnectOptions) void this.reconnectLoop(toError(err));
+        else if (!this.closing) this.finalClose(toError(err));
+        throw err;
+      }
+    })().finally(() => {
+      this.rebinding = undefined;
+    });
+    return this.rebinding;
   }
 
   private finalClose(cause: Error | undefined): void {
@@ -542,19 +691,19 @@ export class SmppClient extends EventEmitter<ClientEvents> {
       );
     }
     // SEC-07: refuse locally a command the bind mode does not allow.
-    if (command !== 'enquire_link' && !canSendInMode('esme', this.options.bind.mode, command)) {
+    if (command !== 'enquire_link' && !canSendInMode('esme', this.bindOptions.mode, command)) {
       return Promise.reject(
         new SmppStateError(
           `send ${command}`,
-          this.options.bind.mode,
+          this.bindOptions.mode,
           COMMAND_STATUS.ESME_RINVBNDSTS,
-          `${command} is not allowed in ${this.options.bind.mode} mode`,
+          `${command} is not allowed in ${this.bindOptions.mode} mode`,
         ),
       );
     }
     const session = this.session;
     if (session && !session.isClosed) return session.request(command, params, options);
-    if (!this.everBound || !this.reconnectOptions) {
+    if (!this.everBound || (!this.reconnectOptions && !this.rebinding)) {
       return Promise.reject(
         new SmppStateError(
           `send ${command}`,
@@ -564,7 +713,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
         ),
       );
     }
-    // Reconnecting: the request waits in the queue and goes out after the re-bind (REL-05).
+    // Reconnecting or re-binding: the request waits in the queue and goes out after the bind (REL-05).
     try {
       const encoded = this.codec.encode({ ...params, command, sequence_number: 0 } as never);
       const timeoutMs = options.timeout ?? this.options.requestTimeout ?? 10_000;
@@ -572,6 +721,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
         command,
         encoded,
         timeoutMs,
+        priority: options.priority ?? (params as { priority_flag?: number }).priority_flag,
         signal: options.signal,
       });
       this.queue.push(request);
@@ -604,16 +754,12 @@ export class SmppClient extends EventEmitter<ClientEvents> {
       npi: opts.destNpi,
     });
     const mp = this.options.multipart ?? {};
+    const segmentOptions = this.segmentOptions(opts);
+    const prepared = prepareText(opts.text, segmentOptions);
     const reference = this.nextConcatRef();
-    const built = buildParts(opts.text, {
+    const built = buildParts(prepared.text, {
+      ...segmentOptions,
       reference,
-      registry: this.registry,
-      strategy: opts.strategy ?? mp.strategy ?? 'udh8',
-      ...(opts.encoding ? { encoding: opts.encoding } : {}),
-      ...(opts.shift ? { shift: opts.shift } : {}),
-      ...(opts.locking ? { locking: opts.locking } : {}),
-      ...(mp.shiftTables ? { shiftTables: mp.shiftTables } : {}),
-      ...(mp.allowLatin1 !== undefined ? { allowLatin1: mp.allowLatin1 } : {}),
       ...(mp.packGsm7 !== undefined ? { packGsm7: mp.packGsm7 } : {}),
       ...(opts.params?.esm_class !== undefined ? { esmClass: opts.params.esm_class } : {}),
     });
@@ -661,6 +807,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
           {
             ...(opts.timeout !== undefined ? { timeout: opts.timeout } : {}),
             ...(opts.signal ? { signal: opts.signal } : {}),
+            ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
           },
         ),
       ),
@@ -686,6 +833,31 @@ export class SmppClient extends EventEmitter<ClientEvents> {
       messageIds,
       parts: built.parts.length,
       encoding: built.encoding.toUpperCase(),
+      replacements: prepared.replacements.length,
+    };
+  }
+
+  /**
+   * What `sendText` would do with a text, without sending anything: encoding, segments (each billed as
+   * one SMS), characters that force UCS2, and what GSM7 normalization saves. Uses the client's
+   * `multipart` and `normalize` options.
+   */
+  estimate(opts: EstimateOptions): TextEstimate {
+    return estimateText(opts.text, this.segmentOptions(opts));
+  }
+
+  private segmentOptions(opts: EstimateOptions) {
+    const mp = this.options.multipart ?? {};
+    const normalize = opts.normalize !== undefined ? opts.normalize : (this.options.normalize ?? false);
+    return {
+      registry: this.registry,
+      strategy: opts.strategy ?? mp.strategy ?? 'udh8',
+      normalize,
+      ...(opts.encoding ? { encoding: opts.encoding } : {}),
+      ...(opts.shift ? { shift: opts.shift } : {}),
+      ...(opts.locking ? { locking: opts.locking } : {}),
+      ...(mp.shiftTables ? { shiftTables: mp.shiftTables } : {}),
+      ...(mp.allowLatin1 !== undefined ? { allowLatin1: mp.allowLatin1 } : {}),
     };
   }
 

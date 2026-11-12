@@ -14,9 +14,19 @@ import type { Metric } from '../metrics.js';
 import type { RequestCommandName } from '../protocol/commands.js';
 import { COMMAND_STATUS } from '../protocol/status.js';
 import type { RequestOptions, ResponseOf } from '../session/session.js';
+import { Deduplicator, type DuplicateKind } from '../utils/dedup.js';
 import { DeliveryTracker, type MessageStatus } from '../utils/delivery-tracker.js';
 import type { DeliveryReport } from '../utils/dlr.js';
-import { type SendTextOptions, type SendTextResult, SmppClient, type SmppClientOptions } from './client.js';
+import type { TextEstimate } from '../utils/estimate.js';
+import {
+  type BindOptions,
+  type ClientHealth,
+  type EstimateOptions,
+  type SendTextOptions,
+  type SendTextResult,
+  SmppClient,
+  type SmppClientOptions,
+} from './client.js';
 import { type InboundMessage, InboundProcessor } from './inbound.js';
 import { type ReconnectOptions, backoffDelay, cancellableSleep } from './reconnect.js';
 
@@ -50,6 +60,8 @@ export interface PoolEvents {
   messageStatus: [status: MessageStatus];
   message: [message: InboundMessage];
   partialMessage: [message: InboundMessage];
+  /** A receipt or message already processed was received again and dropped (`dedup` option). */
+  duplicate: [kind: DuplicateKind, pdu: DeliverSm | DataSm];
   /** A bind is up (first connection or reconnection). */
   memberUp: [member: number];
   /** A bind went down or failed to connect. Its reconnection goes on in the background. */
@@ -58,6 +70,18 @@ export interface PoolEvents {
   error: [error: SmppError, member: number];
   /** Metrics of every bind, with the index of the bind. */
   metric: [metric: Metric, member: number];
+}
+
+/** Health of a pool: one entry per member. */
+export interface PoolHealth {
+  /** At least `minBound` members are bound. */
+  healthy: boolean;
+  bound: number;
+  size: number;
+  inflight: number;
+  queued: number;
+  trackedMessages: number;
+  members: ClientHealth[];
 }
 
 const BOUND = new Set(['BOUND_TX', 'BOUND_RX', 'BOUND_TRX']);
@@ -103,6 +127,9 @@ export class SmppPool extends EventEmitter<PoolEvents> {
         packedGsm7: options.packedGsm7 ?? false,
         messageIdFormat: options.messageIdFormat ?? 'as-is',
         ...(options.reassembly ? { reassembly: options.reassembly } : {}),
+        ...(options.dedup === false
+          ? {}
+          : { dedup: new Deduplicator(options.dedup === true ? {} : options.dedup) }),
         ...(options.trackDeliveries
           ? {
               tracker: new DeliveryTracker((status) => this.emitSafe('messageStatus', status), {
@@ -117,6 +144,7 @@ export class SmppPool extends EventEmitter<PoolEvents> {
         deliveryReport: (dlr, pdu) => this.emitSafe('deliveryReport', dlr, pdu),
         message: (msg) => this.emitSafe('message', msg),
         partialMessage: (msg) => this.emitSafe('partialMessage', msg),
+        duplicate: (kind, pdu) => this.emitSafe('duplicate', kind, pdu),
       },
     );
 
@@ -160,6 +188,49 @@ export class SmppPool extends EventEmitter<PoolEvents> {
   /** Messages awaiting receipts (`trackDeliveries` option). */
   get trackedMessages(): number {
     return this.inbound.tracker?.size ?? 0;
+  }
+
+  /** Health of the pool and of each member, e.g. for a readiness probe. */
+  health(): PoolHealth {
+    const need = Math.min(Math.max(1, this.options.minBound ?? 1), this.members.length);
+    const bound = this.boundCount;
+    return {
+      healthy: bound >= need,
+      bound,
+      size: this.members.length,
+      inflight: this.inflight,
+      queued: this.queueSize,
+      trackedMessages: this.trackedMessages,
+      members: this.members.map((m) => m.health()),
+    };
+  }
+
+  /** `SmppClient.estimate` with the pool's options. */
+  estimate(opts: EstimateOptions): TextEstimate {
+    return this.members[0]!.estimate(opts);
+  }
+
+  /**
+   * Changes the bind parameters of every member, or of the listed members (indexes). They apply from
+   * each member's next bind; `rebind()` applies them now.
+   */
+  updateBind(params: Partial<Omit<BindOptions, 'mode'>>, members?: number[]): void {
+    for (const i of members ?? this.members.map((_, k) => k)) {
+      const member = this.members[i];
+      if (!member) throw new SmppError('SMPP_CONFIG', `No pool member ${i}`);
+      member.updateBind(params);
+    }
+  }
+
+  /**
+   * Rolling re-bind: bound members re-bind one after the other, so the others keep sending.
+   * Rejects with the first failure (the failed member keeps reconnecting in the background).
+   */
+  async rebind(options: { timeout?: number } = {}): Promise<void> {
+    for (const member of this.members) {
+      if (this.closing) return;
+      if (member.isBound) await member.rebind(options);
+    }
   }
 
   // ---------------------------------------------------------------- connection

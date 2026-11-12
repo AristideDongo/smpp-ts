@@ -2,14 +2,16 @@ import { defineConfig } from 'tsup';
 
 export default defineConfig([
   {
-    entry: { index: 'src/index.ts', otel: 'src/otel/index.ts' },
+    entry: { index: 'src/index.ts', otel: 'src/otel/index.ts', testing: 'src/testing/index.ts' },
     format: ['esm', 'cjs'],
     dts: true,
     sourcemap: true,
     clean: true,
     target: 'node20',
     platform: 'node',
-    splitting: false,
+    // Shared chunks: smpp-ts/testing and smpp-ts/otel use the same classes as the main entry
+    // (instanceof SmppError works across entry points).
+    splitting: true,
     treeshake: true,
   },
   {

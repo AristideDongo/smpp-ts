@@ -2,6 +2,7 @@ import type { DataSm, DeliverSm } from '../codec/pdu.js';
 import type { EncodingRegistry } from '../encoding/registry.js';
 import { toError } from '../errors.js';
 import type { Logger } from '../logger.js';
+import type { Deduplicator, DuplicateKind } from '../utils/dedup.js';
 import type { DeliveryTracker } from '../utils/delivery-tracker.js';
 import {
   type DeliveryReport,
@@ -29,6 +30,8 @@ export interface InboundSink {
   deliveryReport(dlr: DeliveryReport, pdu: DeliverSm | DataSm): void;
   message(message: InboundMessage): void;
   partialMessage(message: InboundMessage): void;
+  /** A copy of a receipt or message already processed was dropped. */
+  duplicate?(kind: DuplicateKind, pdu: DeliverSm | DataSm): void;
 }
 
 export interface InboundProcessorOptions {
@@ -39,6 +42,8 @@ export interface InboundProcessorOptions {
   reassembly?: { ttl?: number; maxBuffers?: number };
   /** Receives every delivery receipt (multipart tracking). */
   tracker?: DeliveryTracker;
+  /** Drops receipts and messages already processed (SMSC redeliveries). */
+  dedup?: Deduplicator;
 }
 
 /**
@@ -74,10 +79,21 @@ export class InboundProcessor {
       if (isDeliveryReceipt(pdu)) {
         const dlr = buildDeliveryReport(pdu, content.text, this.options.messageIdFormat ?? 'as-is');
         if (dlr) {
+          if (
+            this.options.dedup?.receipt(dlr.rawMessageId, dlr.rawStatus, `${dlr.source}>${dlr.destination}`)
+          ) {
+            this.sink.duplicate?.('receipt', pdu);
+            return;
+          }
           this.sink.deliveryReport(dlr, pdu);
           this.tracker?.handle(dlr);
           return;
         }
+      }
+      const raw = rawContent(pdu);
+      if (this.options.dedup?.message(pdu.source_addr, pdu.destination_addr, pdu.data_coding, raw)) {
+        this.sink.duplicate?.('message', pdu);
+        return;
       }
       if (content.concat) {
         const done = this.reassembler.add({
@@ -113,7 +129,15 @@ export class InboundProcessor {
   clear(): void {
     this.reassembler.clear();
     this.tracker?.clear();
+    this.options.dedup?.clear();
   }
+}
+
+/** Content bytes as received (UDH included, so each segment of a long message differs). */
+function rawContent(pdu: DeliverSm | DataSm): Uint8Array {
+  const short = 'short_message' in pdu ? pdu.short_message : undefined;
+  if (short && short.length > 0) return short;
+  return pdu.message_payload ?? Buffer.alloc(0);
 }
 
 function toInbound(msg: ReassembledMessage<DeliverSm | DataSm>): InboundMessage {

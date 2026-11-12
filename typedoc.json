@@ -1,7 +1,7 @@
 {
   "$schema": "https://typedoc.org/schema.json",
   "name": "smpp-ts",
-  "entryPoints": ["src/index.ts", "src/otel/index.ts"],
+  "entryPoints": ["src/index.ts", "src/otel/index.ts", "src/testing/index.ts"],
   "out": "docs-site",
   "readme": "README.md",
   "projectDocuments": ["docs/guides/*.md", "docs/PRODUCTION.md"],
@@ -26,6 +26,7 @@
     "ParamsTuple",
     "FieldValue",
     "TlvEntry",
-    "RespParams"
+    "RespParams",
+    "Deduplicator"
   ]
 }

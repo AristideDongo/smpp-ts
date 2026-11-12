@@ -51,9 +51,20 @@ async function sendAll(recipients: string[], text: string, concurrency = 200) {
 }
 ```
 
-## Long messages
+## Long messages and cost
 
-Each segment is billed. `countSegments(text)` tells you how many before sending; `multipart.maxSegments` rejects a text that would need more, before anything is sent.
+Each segment is billed. `pool.estimate({ text })` tells you how many before sending, which characters push the text to UCS2, and what GSM7 normalization would save (`suggestion`). `multipart.maxSegments` rejects a text that would need more, before anything is sent.
+
+On a campaign, one curly apostrophe or one `ô` can double the bill: with `normalize: 'punctuation'` (or `'transliterate'`, which also drops accents GSM7 does not have), the text is sent in GSM7 whenever that saves segments.
+
+```ts
+const e = pool.estimate({ text });
+if (e.suggestion) console.warn(`normalize: '${e.suggestion.normalize}' → ${e.suggestion.segments} SMS instead of ${e.segments}`);
+```
+
+## Urgent messages during a campaign
+
+Messages sent with `priority: 3` (OTP, alerts) leave the send queue before queued campaign messages; a starvation guard (`queueFairness`, 10 by default) keeps the campaign moving.
 
 ## Outcome
 

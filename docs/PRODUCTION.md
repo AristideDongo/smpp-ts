@@ -100,7 +100,13 @@ At a minimum, watch through `client.on('metric')` or `smpp-ts/otel`:
 - `command_status` per code: a spike of `ESME_RTHROTTLED` means `rateLimit` is too high; a spike of `ESME_RINVDSTADR` points to a number format problem.
 - `queue.size`: a growing queue means the SMSC cannot absorb the rate.
 - `session.reconnect`: frequent reconnections often come from an `enquireLinkInterval` longer than the SMSC's idle timeout, or from a firewall that drops idle connections.
+- `session.congestion`: an SMPP 5.0 SMSC reporting a high `congestion_state` (the client already slows down with `rateLimit`).
+- `inbound.duplicate`: receipts or messages the SMSC sent again; a steady flow points to responses lost on the way back.
 - `messageStatus` event: the `DELIVERED` rate per operator is the business metric.
+
+`client.health()` (or `pool.health()`) gives a snapshot for a readiness probe: bound state, load, last traffic, congestion.
+
+To rotate the bind password without a restart: `client.updateBind({ password })`, then `client.rebind()` (`pool.rebind()` re-binds one member at a time).
 
 ## 8. Before opening the traffic
 

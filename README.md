@@ -89,6 +89,47 @@ new SmppClient({
 });
 ```
 
+### SMS cost: GSM7 normalization
+
+One curly apostrophe (`’`, common in text pasted from a word processor or typed on a phone) is enough to send a whole message in UCS2: 70 characters per SMS instead of 160, so two or three times the segments billed. `normalize` replaces such characters with their GSM7 equivalent, **only when it saves segments** (a text that stays in UCS2 anyway, because of an emoji, is sent unchanged):
+
+| Mode | Replaces | Example |
+|---|---|---|
+| `punctuation` | Curly quotes, `«»`, dashes, `…`, special spaces, invisible characters | `aujourd’hui` → `aujourd'hui` |
+| `transliterate` | The above, plus letters missing from GSM7 (accent dropped) | `Côte`, `garçon`, `cœur` → `Cote`, `garcon`, `coeur` |
+
+Characters GSM7 already has (`é è à ù ì ò Ç Ñ Ü ß €`…) are never touched.
+
+```ts
+const client = new SmppClient({ …, normalize: 'punctuation' });   // default: false
+await client.sendText({ to, from, text, normalize: 'transliterate' }); // per message
+// → { messageIds, parts: 1, encoding: 'GSM7', replacements: 2 }
+```
+
+`estimate()` shows what a text costs before sending it, and what normalization would save:
+
+```ts
+client.estimate({ text: 'Votre colis arrive aujourd’hui, à bientôt sur notre boutique ! …' });
+// {
+//   encoding: 'ucs2', segments: 2, perSegment: 67, remaining: 41,
+//   nonGsm7: ['’', 'ô'],                                   // what forces UCS2
+//   suggestion: { normalize: 'transliterate', segments: 1, encoding: 'gsm7' },
+//   …
+// }
+```
+
+`estimateText`, `normalizeForGsm7` and `nonGsm7Characters` are exported for use without a client (a campaign editor showing the cost as the user types).
+
+### Priorities
+
+`priority` (0 to 3) sets `priority_flag` **and** the place in the local send queue: a higher priority leaves the queue first, so an OTP does not wait behind 10,000 queued marketing messages. Within a priority, order is FIFO. `submit()` uses its `priority_flag`, any request accepts `{ priority }`.
+
+```ts
+await client.sendText({ to, from, text: 'Your code: 123456', priority: 3 });
+```
+
+A starvation guard keeps lower priorities moving: after `queueFairness` (default 10) requests in a row from a higher priority while a lower one waits, the longest-waiting lower request goes out. `queueFairness: 0` gives strict priority.
+
 ### Delivery tracking
 
 A long SMS is sent as several segments, and each segment gets its own receipt. With `trackDeliveries`, the library groups them and emits a single outcome per message:
@@ -120,6 +161,22 @@ new SmppClient({ …, trackDeliveries: { store } });
 ```
 
 Records are plain data (`JSON.stringify` works, dates are revived on reload). If the store fails, tracking goes on in memory and the error is logged. The library ships no storage: the store belongs to the application.
+
+#### Duplicates
+
+When a `deliver_sm_resp` gets lost (connection dropped just before the SMSC read it), the SMSC sends the receipt or the message again after the reconnection. `dedup` drops these copies before they reach `deliveryReport`, `messageStatus` or `message`, and emits `duplicate` instead (the copy is still acknowledged, so the SMSC stops resending it):
+
+| Option | Default | Drops |
+|---|---|---|
+| `receipts` | `true` | A receipt with the same `message_id` and status as one already received (within `ttl`, 1 h) |
+| `messages` | `false` | An incoming message or segment with the same sender, recipient and content (within `messageTtl`, 2 min). Off by default: a user may really send "OK" twice |
+
+```ts
+new SmppClient({ …, dedup: { messages: true } });          // dedup: false disables both
+client.on('duplicate', (kind, pdu) => metrics.increment(`sms.duplicate.${kind}`));
+```
+
+Memory is bounded (`maxEntries`, 100,000 keys). To drop copies that arrive on another process, give it a `store` with a synchronous `seen(key, ttlMs)` check-and-set (a local cache in front of Redis, for instance). An `SmppPool` deduplicates across its binds.
 
 Two other sources can be plugged in the same way:
 
@@ -183,6 +240,26 @@ During a reconnection, messages not yet written stay queued and go out after the
 
 `close({ drain: true })` refuses new sends, waits for pending requests to finish, sends `unbind`, then closes the connection.
 
+**SMPP 5.0 congestion.** An SMSC can report its load in the `congestion_state` TLV of its responses (0 to 100). With `rateLimit`, the client slows down from `congestionThreshold` (default 90, "nearing congestion"), as it does on `ESME_RTHROTTLED`, instead of waiting to be throttled. The last value is in `health()` and in the `session.congestion` metric.
+
+**Health.** `health()` returns a snapshot for a readiness probe or a dashboard:
+
+```ts
+app.get('/ready', (_req, res) => {
+  const h = client.health();
+  // { healthy, state, reconnecting, reconnectAttempt, inflight, queued, queuedByPriority,
+  //   lastReceivedAt, boundAt, congestionState, rateLimit, trackedMessages }
+  res.status(h.healthy ? 200 : 503).json(h);
+});
+```
+
+**Credential rotation.** `updateBind({ password })` changes the bind parameters for the next bind; `rebind()` applies them now, without losing anything: queued requests stay queued, in-flight requests get their response first, then the session unbinds and binds again. If the new bind fails, `rebind()` rejects and the usual reconnection takes over.
+
+```ts
+client.updateBind({ password: await vault.read('smpp/password') });
+await client.rebind();
+```
+
 ### TLS
 
 Certificate verification is **on by default**. If the SMSC uses a self-signed certificate, provide its certificate authority instead of disabling verification:
@@ -245,6 +322,35 @@ pool.on('messageStatus', (s) => console.log(s.outcome));
 - All the segments of a `sendText` go through the same bind, and concatenation references are shared by the pool: two binds never use the same reference at the same time.
 - Receipts and incoming messages are processed once for the whole pool. A receipt can arrive on another bind than its `submit_sm`, and the segments of a long incoming message can arrive on different binds: `messageStatus` and `message` still work.
 - `pool.members` gives access to each `SmppClient` (state, `raw` API).
+
+## Testing your application
+
+`smpp-ts/testing` starts an SMSC in the test process: it records what the application sends, answers it, sends receipts and incoming messages, and reproduces the failures that are hard to get from a real SMSC.
+
+```ts
+import { COMMAND_STATUS, SmppClient } from 'smpp-ts';
+import { createTestSmsc } from 'smpp-ts/testing';
+
+const smsc = await createTestSmsc({ receipts: 'DELIVERED', receiptDelay: 50 });
+const client = new SmppClient({ url: smsc.url, bind: { mode: 'transceiver', system_id: 'test', password: 'x' } });
+await client.connect();
+
+await sendOtp(client, '2250700000000');            // your code
+expect(smsc.submitted[0]?.text).toMatch(/\d{6}/);
+
+smsc.throttleNext(2);                              // ESME_RTHROTTLED twice
+smsc.failNext('submit_sm', COMMAND_STATUS.ESME_RINVDSTADR);
+smsc.dropNext('submit_sm');                        // never answered: request timeout
+smsc.disconnectOnNext('submit_sm');                // connection cut with the request in flight
+smsc.setCongestion(95);                            // congestion_state in every response
+await smsc.sendMo({ from: '2250700000000', to: '1234', text: 'STOP' });
+await smsc.sendReceipt({ messageId: '1', status: 'UNDELIVERABLE', from: '2250700000000', to: 'ACME' });
+await smsc.waitFor('submit_sm', { count: 3 });
+
+await smsc.close();
+```
+
+Options: accepted `systemId` / `password` (or `authenticate`), `receipts` (a status, `none`, or a function of the PDU), `receiptDelay`, `duplicateReceipts`, `messageId`. `received`, `submitted` and `binds` record the traffic (never the password); `reset()` clears them between tests. It works with Vitest, Jest and `node:test`, and needs no Docker.
 
 ## Server
 
@@ -329,7 +435,7 @@ client.on('metric', (m) => prometheus.observe(m));
 
 - The logger is silent by default. Passwords are always masked; SMS content and numbers are masked on request.
 - Every log line carries `sessionId`, `systemId`, `remoteAddress`, `command` and `sequence_number`.
-- Emitted metrics: `pdu.sent`, `pdu.received`, `request.latency`, `request.timeout`, `request.inflight`, `queue.size`, `session.reconnect`, `command_status`, `bytes.in` and `bytes.out`.
+- Emitted metrics: `pdu.sent`, `pdu.received`, `request.latency`, `request.timeout`, `request.inflight`, `queue.size`, `session.reconnect`, `session.congestion`, `inbound.duplicate`, `command_status`, `bytes.in` and `bytes.out`.
 
 ### OpenTelemetry
 
@@ -368,6 +474,7 @@ API reference and guides: **https://aristidedongo.github.io/smpp-ts/**
 - [Delivery receipts](docs/guides/delivery-reports.md)
 - [Building an SMPP server](docs/guides/building-a-server.md)
 - [Going to production](docs/PRODUCTION.md)
+- [Testing an application that sends SMS](docs/guides/testing.md)
 - [Comparison with other SMPP libraries](docs/guides/comparison.md)
 ## Interoperability
 
