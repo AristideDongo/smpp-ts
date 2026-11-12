@@ -82,7 +82,7 @@ jobs:
       fail-fast: false
       matrix:
         # smpp-ts client against third-party SMSCs, smpp-ts server against third-party clients.
-        peer: [smscsim, jsmpp, python-smpplib, gosmpp]
+        peer: [smscsim, jsmpp, cloudhopper, python-smpplib, gosmpp, php8-smpp]
     env:
       # The `ukarim/smscsim:latest` Docker Hub image is not built for amd64:
       # build the simulator from source, at a pinned commit.
@@ -92,6 +92,12 @@ jobs:
       SLF4J_VERSION: 2.0.16
       SLF4J_SHA256: a12578dde1ba00bd9b816d388a0b879928d00bab3c83c240f7013bf4196c579a
       SMPPLIB_VERSION: 2.2.4
+      # Cloudhopper SMPP 5.0.9 (Netty 3) and its runtime dependencies, from Maven Central.
+      CH_SMPP_SHA256: a9235c5c00270e0477bb5d32ad832f7c252ad2c8a397f48abc91486791923721
+      CH_UTIL_SHA256: c5867cac3c83e2a951e0228a47e925fe9b1f434607829b638e7e18f0c965012e
+      CH_CHARSET_SHA256: 2cf0ec764f16fd58ea6afeb148eb050ae0e4cc33c2b1d74e94a81ad6b98bd167
+      NETTY3_SHA256: 203a5cb5da719adc6990abf60cc57eaa3e92fafbe1e550e076d60ad523e28f30
+      SLF4J17_SHA256: 20d68d0c2e4fb984ffc164852b8b68df49a2b8716076f576881bcef7649a0e35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -116,7 +122,7 @@ jobs:
           cat peer.log; exit 1
 
       # ---------------------------------------------------------------- jsmpp (Java SMSC)
-      - if: matrix.peer == 'jsmpp'
+      - if: matrix.peer == 'jsmpp' || matrix.peer == 'cloudhopper'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -132,7 +138,27 @@ jobs:
           for i in $(seq 1 100); do (echo > /dev/tcp/127.0.0.1/2775) 2>/dev/null && exit 0; sleep 0.3; done
           cat peer.log; exit 1
 
-      - if: matrix.peer == 'smscsim' || matrix.peer == 'jsmpp'
+      # ---------------------------------------------------------------- Cloudhopper (Java SMSC)
+      - if: matrix.peer == 'cloudhopper'
+        name: Start Cloudhopper SMSC
+        run: |
+          M=https://repo1.maven.org/maven2
+          curl -sSfLo ch-smpp.jar "$M/com/fizzed/ch-smpp/5.0.9/ch-smpp-5.0.9.jar"
+          curl -sSfLo ch-commons-util.jar "$M/com/cloudhopper/ch-commons-util/6.0.2/ch-commons-util-6.0.2.jar"
+          curl -sSfLo ch-commons-charset.jar "$M/com/cloudhopper/ch-commons-charset/3.0.2/ch-commons-charset-3.0.2.jar"
+          curl -sSfLo netty.jar "$M/io/netty/netty/3.9.6.Final/netty-3.9.6.Final.jar"
+          curl -sSfLo slf4j-api.jar "$M/org/slf4j/slf4j-api/1.7.13/slf4j-api-1.7.13.jar"
+          echo "${CH_SMPP_SHA256}  ch-smpp.jar" | sha256sum -c
+          echo "${CH_UTIL_SHA256}  ch-commons-util.jar" | sha256sum -c
+          echo "${CH_CHARSET_SHA256}  ch-commons-charset.jar" | sha256sum -c
+          echo "${NETTY3_SHA256}  netty.jar" | sha256sum -c
+          echo "${SLF4J17_SHA256}  slf4j-api.jar" | sha256sum -c
+          nohup java -cp ch-smpp.jar:ch-commons-util.jar:ch-commons-charset.jar:netty.jar:slf4j-api.jar \
+            test/interop/servers/CloudhopperSmsc.java 2775 > peer.log 2>&1 &
+          for i in $(seq 1 100); do (echo > /dev/tcp/127.0.0.1/2775) 2>/dev/null && exit 0; sleep 0.3; done
+          cat peer.log; exit 1
+
+      - if: matrix.peer == 'smscsim' || matrix.peer == 'jsmpp' || matrix.peer == 'cloudhopper'
         run: npm run test:interop
         env:
           SMPP_INTEROP_URL: smpp://127.0.0.1:2775
@@ -158,8 +184,40 @@ jobs:
         env:
           SMPP_INTEROP_CLIENT: test/interop/clients/gosmpp/gosmpp-client
 
-      - if: always() && (matrix.peer == 'smscsim' || matrix.peer == 'jsmpp')
+      # ---------------------------------------------------------------- php8-smpp (PHP client)
+      # PHP and Composer from the Ubuntu archive (no third-party action).
+      - if: matrix.peer == 'php8-smpp'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends php-cli php-mbstring composer
+          php -v && php -m | grep -qx sockets && php -m | grep -qx mbstring
+      - if: matrix.peer == 'php8-smpp'
+        run: composer install --no-interaction --no-progress
+        working-directory: test/interop/clients/php8-smpp
+      - if: matrix.peer == 'php8-smpp'
+        run: npm run test:interop
+        env:
+          SMPP_INTEROP_CLIENT: php test/interop/clients/php8-smpp/client.php
+
+      - if: always() && (matrix.peer == 'smscsim' || matrix.peer == 'jsmpp' || matrix.peer == 'cloudhopper')
         run: cat peer.log
+
+  kannel:
+    name: interop (kannel)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Kannel 1.4.5 from the Ubuntu archive: bearerbox (SMPP client of the smpp-ts server) and smsbox.
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends kannel
+      # The package starts a system Kannel on the default ports: stop it, the test runs its own.
+      - run: sudo systemctl stop kannel || true
+      - run: npm run test:kannel
 
   jasmin:
     name: interop (jasmin)

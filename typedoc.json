@@ -4,7 +4,7 @@
   "entryPoints": ["src/index.ts", "src/otel/index.ts", "src/testing/index.ts"],
   "out": "docs-site",
   "readme": "README.md",
-  "projectDocuments": ["docs/guides/*.md", "docs/PRODUCTION.md"],
+  "projectDocuments": ["docs/guides/*.md", "docs/PRODUCTION.md", "docs/decisions.md"],
   "excludePrivate": true,
   "excludeInternal": true,
   "includeVersion": true,

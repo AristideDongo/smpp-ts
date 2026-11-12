@@ -223,7 +223,8 @@ export class PduCodec {
     for (const key in params) {
       const index = STANDARD_TLV_INDEX.get(key);
       if (index === undefined || params[key] === undefined) continue;
-      (present ??= []).push(index);
+      if (present === undefined) present = [index];
+      else present.push(index);
     }
     if (present) {
       if (present.length > 1) present.sort((a, b) => a - b);
