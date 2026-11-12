@@ -83,6 +83,11 @@ export interface SessionOptions extends SessionTimeouts {
   /** Context added to every log entry. */
   logContext?: Record<string, unknown>;
   /**
+   * SMPP 5.0 `congestion_state` (0-100) from which the rate limiter slows down, as for ESME_RTHROTTLED.
+   * Needs `rateLimiter`. Default: 90 ("nearing congestion"). 0 disables it.
+   */
+  congestionThreshold?: number;
+  /**
    * Bytes waiting in the socket write buffer beyond which the session is closed:
    * a peer that sends requests without reading the responses cannot grow memory without limit.
    * Default: 1 MiB. 0 = no limit (reading is still paused while the buffer is full).
@@ -106,6 +111,11 @@ export interface RequestOptions {
    * safe to resend. Aborted while waiting for the response: rejected with `written: true`.
    */
   signal?: AbortSignal;
+  /**
+   * Queue priority, 0 (default) to 3: queued requests of a higher priority are written first.
+   * Defaults to the request's `priority_flag` when it has one.
+   */
+  priority?: number;
 }
 
 export interface SessionEvents {
@@ -158,6 +168,12 @@ export class Session extends EventEmitter<SessionEvents> {
   private readonly timeouts: Required<SessionTimeouts>;
   private readonly logContext: Record<string, unknown>;
   private readonly maxWriteBuffer: number;
+  private readonly congestionThreshold: number;
+  private lastCongestionPenalty = 0;
+  /** Last `congestion_state` received from the peer, if any. */
+  congestionState: number | undefined;
+  /** No new request leaves the queue (graceful re-bind). */
+  private held = false;
 
   private sequence = 0;
   private readonly sequenceGenerator: SequenceGenerator | undefined;
@@ -203,6 +219,7 @@ export class Session extends EventEmitter<SessionEvents> {
       ...options.logContext,
     };
     this.maxWriteBuffer = options.maxWriteBuffer ?? 1024 * 1024;
+    this.congestionThreshold = options.congestionThreshold ?? 90;
     this.sequenceGenerator = options.sequenceGenerator;
     this.framer = new Framer(this.codec.maxPduLength);
     this.closedPromise = new Promise((r) => {
@@ -253,6 +270,23 @@ export class Session extends EventEmitter<SessionEvents> {
     return this.windowUsed;
   }
 
+  /** Time (epoch ms) of the last bytes received from the peer. */
+  get lastReceivedAt(): number {
+    return this.lastReceived;
+  }
+
+  /**
+   * Stops writing queued requests (they stay queued) and resolves once no request is in flight,
+   * or after `timeoutMs`. Used before a graceful re-bind.
+   */
+  async holdAndDrain(timeoutMs: number): Promise<void> {
+    this.held = true;
+    const deadline = Date.now() + timeoutMs;
+    while (this.windowUsed > 0 && !this.closed && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  }
+
   /** Resolves when the socket is closed. */
   get closedSignal(): Promise<void> {
     return this.closedPromise;
@@ -290,6 +324,7 @@ export class Session extends EventEmitter<SessionEvents> {
         command,
         encoded,
         timeoutMs,
+        priority: options.priority ?? (params as { priority_flag?: number }).priority_flag,
         onTimeout: (req) => this.onRequestTimeout(req),
         signal: options.signal,
         onAbort: () => this.dispatch(),
@@ -508,7 +543,7 @@ export class Session extends EventEmitter<SessionEvents> {
 
   /** Fills the window from the queue, honouring state, backpressure and rate limit. */
   dispatch(): void {
-    if (this.closed || this.writeBlocked || !isBound(this.state)) return;
+    if (this.closed || this.writeBlocked || this.held || !isBound(this.state)) return;
     while (this.windowUsed < this.window) {
       const req = this.queue.peek();
       if (!req) break;
@@ -659,6 +694,7 @@ export class Session extends EventEmitter<SessionEvents> {
       return;
     }
     const expected = responseNameOf(req.command);
+    this.onCongestionState(pdu);
     if (req.writtenAt !== undefined) {
       this.emitMetric({
         name: 'request.latency',
@@ -695,6 +731,21 @@ export class Session extends EventEmitter<SessionEvents> {
       req.resolve(pdu);
     }
     this.dispatch();
+  }
+
+  /** SMPP 5.0 congestion_state TLV: slows the rate limiter down when the peer nears congestion. */
+  private onCongestionState(pdu: Pdu): void {
+    const level = (pdu as { congestion_state?: number }).congestion_state;
+    if (level === undefined) return;
+    this.congestionState = level;
+    this.emitMetric({ name: 'session.congestion', type: 'gauge', value: level });
+    if (!this.rateLimiter || this.congestionThreshold <= 0 || level < this.congestionThreshold) return;
+    // At most one reduction per second: every response of a burst carries the same signal.
+    const now = Date.now();
+    if (now - this.lastCongestionPenalty < 1000) return;
+    this.lastCongestionPenalty = now;
+    this.log('debug', 'peer reports congestion, slowing down', { congestion_state: level });
+    this.rateLimiter.penalize();
   }
 
   private handleRequest(pdu: Pdu): void {

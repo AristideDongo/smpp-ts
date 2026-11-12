@@ -1,7 +1,16 @@
 // Multi-runtime smoke test (Node, Bun, Deno) on the built package (`npm run build`).
 // Usage: node test/runtime/smoke.mjs | bun test/runtime/smoke.mjs | deno run -A test/runtime/smoke.mjs
 import assert from 'node:assert/strict';
-import { SmppClient, SmppServer, countSegments, parseDlr, safeCompare } from '../../dist/index.js';
+import {
+  SmppClient,
+  SmppError,
+  SmppServer,
+  countSegments,
+  estimateText,
+  parseDlr,
+  safeCompare,
+} from '../../dist/index.js';
+import { createTestSmsc } from '../../dist/testing.js';
 
 const runtime =
   typeof globalThis.Bun !== 'undefined'
@@ -61,6 +70,28 @@ try {
 
   await client.close({ drain: true });
   assert.equal(client.state, 'CLOSED');
+
+  // GSM7 normalization (Unicode property escapes, String.normalize)
+  const estimate = estimateText(`Côte d’Ivoire ${'x'.repeat(80)}`, { normalize: 'transliterate' });
+  assert.equal(estimate.encoding, 'gsm7');
+
+  // smpp-ts/testing shares its classes with the main entry (chunks)
+  const smsc = await createTestSmsc();
+  try {
+    assert.ok(smsc.server instanceof SmppServer);
+    const tester = new SmppClient({
+      url: smsc.url,
+      bind: { mode: 'transceiver', system_id: 'smoke', password: 'secret' },
+      reconnect: false,
+    });
+    await tester.connect();
+    await tester.sendText({ to: '2250700000000', from: 'SMOKE', text: 'hello' });
+    assert.equal(smsc.submitted[0]?.text, 'hello');
+    await tester.close();
+    await assert.rejects(smsc.sendMo({ from: '1', to: '2', text: 'x' }), (e) => e instanceof SmppError);
+  } finally {
+    await smsc.close();
+  }
   console.log(`[${runtime}] smoke test passed`);
 } catch (err) {
   console.error(`[${runtime}] smoke test failed`, err);

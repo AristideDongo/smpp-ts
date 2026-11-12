@@ -4,7 +4,8 @@
   "license": "MIT",
   "exports": {
     ".": "./src/index.ts",
-    "./otel": "./src/otel/index.ts"
+    "./otel": "./src/otel/index.ts",
+    "./testing": "./src/testing/index.ts"
   },
   "publish": {
     "include": [

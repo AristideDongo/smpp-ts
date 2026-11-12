@@ -19,6 +19,11 @@ How smpp-ts compares with other maintained SMPP libraries, to help you choose. L
 | Reassemble incoming long messages | ✅ | ✅ | — | — | ❌ (example code) | — |
 | Delivery receipt parsing | ✅ | ✅ | ✅ | — | — | — |
 | One outcome per multipart message | ✅ | ✅ | — | — | — | — |
+| GSM7 normalization (avoid UCS2 billing) | ✅ | — | — | — | — | — |
+| Cost estimate before sending | ✅ | — | — | — | — | — |
+| Priority send queue | ✅ | — | — | — | — | — |
+| Drops receipts / messages sent again | ✅ | — | — | — | — | — |
+| In-process test SMSC with fault injection | ✅ | — | — | — | — | — |
 | Several binds behind one API | ✅ | ❌ (planned) | — | — | — | — |
 | TLS certificate verified by default | ✅ | TLS off by default | — | — | — | — |
 | Server: authentication required | ✅ | accepts every bind by default | — | — | n/a | n/a |

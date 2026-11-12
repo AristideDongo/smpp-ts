@@ -1,12 +1,14 @@
 // Client / server
 export { SmppClient } from './client/client.js';
 export { SmppPool } from './client/pool.js';
-export type { PoolEvents, PoolStrategy, SmppPoolOptions } from './client/pool.js';
+export type { PoolEvents, PoolHealth, PoolStrategy, SmppPoolOptions } from './client/pool.js';
 export { InboundProcessor } from './client/inbound.js';
 export type { InboundProcessorOptions, InboundSink } from './client/inbound.js';
 export type {
   BindOptions,
   ClientEvents,
+  ClientHealth,
+  EstimateOptions,
   InboundMessage,
   RawApi,
   SendTextOptions,
@@ -47,7 +49,8 @@ export { canSend, isBound } from './session/state-machine.js';
 export type { BindMode, SessionRole, SessionState } from './session/state-machine.js';
 export { TokenBucket } from './session/rate-limiter.js';
 export type { RateLimitOptions } from './session/rate-limiter.js';
-export { RequestQueue } from './session/window.js';
+export { PRIORITY_LEVELS, RequestQueue } from './session/window.js';
+export type { RequestQueueOptions } from './session/window.js';
 
 // Codec
 export {
@@ -136,6 +139,12 @@ export type { DetectOptions, DetectionResult, DetectedEncoding } from './encodin
 // Utilities
 export { countSegments, splitText } from './utils/segments.js';
 export type { MultipartStrategy, SegmentInfo, SegmentOptions } from './utils/segments.js';
+export { estimateText, prepareText } from './utils/estimate.js';
+export type { PrepareTextOptions, PreparedText, TextEstimate } from './utils/estimate.js';
+export { nonGsm7Characters, normalizeForGsm7 } from './encoding/normalize.js';
+export type { NormalizeMode, NormalizeOptions, NormalizeResult, Replacement } from './encoding/normalize.js';
+export { MemoryDedupStore } from './utils/dedup.js';
+export type { DedupOptions, DedupStore, DuplicateKind } from './utils/dedup.js';
 export {
   Reassembler,
   buildParts,

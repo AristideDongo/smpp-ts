@@ -61,6 +61,8 @@ const DESCRIPTIONS: Record<Metric['name'], OtelInstrumentOptions> = {
   'request.inflight': { description: 'Requests awaiting a response', unit: '{request}' },
   'queue.size': { description: 'Requests waiting in the send queue', unit: '{request}' },
   'session.reconnect': { description: 'Reconnection attempts', unit: '{attempt}' },
+  'session.congestion': { description: 'SMPP 5.0 congestion_state reported by the peer (0-100)', unit: '1' },
+  'inbound.duplicate': { description: 'Receipts and messages received again and dropped', unit: '{pdu}' },
   command_status: { description: 'Responses by command_status', unit: '{response}' },
   'bytes.in': { description: 'Bytes received', unit: 'By' },
   'bytes.out': { description: 'Bytes sent', unit: 'By' },
@@ -115,7 +117,8 @@ export function instrumentSmpp(
     try {
       const attributes: OtelAttributes = { ...base };
       if (metric.labels) {
-        attributes['smpp.command'] = metric.labels.command;
+        if ('command' in metric.labels) attributes['smpp.command'] = metric.labels.command;
+        if ('kind' in metric.labels) attributes['smpp.kind'] = metric.labels.kind;
         if ('status' in metric.labels) attributes['smpp.command_status'] = metric.labels.status;
       }
       const session = rest[0] as { systemId?: string } | undefined;

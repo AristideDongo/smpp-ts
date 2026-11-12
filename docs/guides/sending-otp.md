@@ -25,18 +25,24 @@ async function sendCode(phone: string, code: string, requestId: string) {
     registeredDelivery: true,
     validityPeriod: 5 * 60_000, // the SMSC drops it after 5 minutes
     reference: requestId,
+    priority: 3, // leaves the send queue before bulk traffic
   });
 }
 ```
 
+## Never stuck behind a campaign
+
+When the same bind also sends bulk traffic, thousands of messages can be waiting in the send queue. `priority: 3` puts the code at the front of the queue (and sets `priority_flag`). A starvation guard (`queueFairness`) keeps the rest moving.
+
 ## Keep it in one SMS
 
 - Stay in the GSM 7-bit alphabet: one emoji or one character outside GSM7 switches the whole message to UCS2 (70 characters instead of 160).
-- Check before sending: `countSegments(text)` returns the encoding and the number of segments.
+- Check before sending: `client.estimate({ text })` returns the encoding, the number of segments and the characters that force UCS2 (`nonGsm7`).
+- Templates often carry a curly apostrophe (`’`) copied from a document: `normalize: 'punctuation'` turns it into `'` when that saves a segment.
 
 ```ts
-import { countSegments } from 'smpp-ts';
-countSegments('Your code is 123456 🎉'); // { encoding: 'ucs2', segments: 1, perSegment: 70, … }
+client.estimate({ text: 'Your code is 123456 🎉' });
+// { encoding: 'ucs2', segments: 1, perSegment: 70, nonGsm7: ['🎉'], … }
 ```
 
 ## Expiry
