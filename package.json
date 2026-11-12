@@ -60,7 +60,15 @@
     "esme",
     "gsm",
     "typescript",
-    "opentelemetry"
+    "opentelemetry",
+    "smpp-client",
+    "smpp-server",
+    "smpp34",
+    "smpp5",
+    "sms-gateway",
+    "delivery-receipt",
+    "gsm7",
+    "ucs2"
   ],
   "scripts": {
     "build": "tsup",
@@ -72,6 +80,7 @@
     "test:runtime": "npm run build && node test/runtime/smoke.mjs",
     "test:interop": "vitest run --config vitest.interop.config.ts",
     "test:jasmin": "JASMIN=1 vitest run --config vitest.interop.config.ts test/interop/jasmin",
+    "test:kannel": "KANNEL=1 vitest run --config vitest.interop.config.ts test/interop/kannel",
     "coverage": "vitest run --coverage",
     "fuzz": "FUZZ_RUNS=1000000 vitest run test/fuzz --testTimeout=3600000",
     "prepublishOnly": "npm run typecheck && npm run test && npm run build",

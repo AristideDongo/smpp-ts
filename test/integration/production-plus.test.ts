@@ -188,11 +188,16 @@ describe('health, updateBind and rebind', () => {
     expect(h.boundAt).toBeGreaterThanOrEqual(before);
     expect(h.lastReceivedAt).toBeGreaterThanOrEqual(before);
 
+    // Snapshot taken while the connection is down, whatever the speed of the reconnection.
+    let whileDown: ReturnType<typeof c.health> | undefined;
+    c.once('reconnecting', () => {
+      whileDown = c.health();
+    });
+    const reconnected = new Promise<void>((resolve) => c.once('reconnected', () => resolve()));
     s.disconnectAll();
-    await until(() => c.health().reconnecting || c.isBound === false);
-    expect(c.health().healthy).toBe(false);
-    await until(() => c.isBound);
-    expect(c.health().healthy).toBe(true);
+    await reconnected;
+    expect(whileDown).toMatchObject({ healthy: false, reconnecting: true, reconnectAttempt: 1 });
+    expect(c.health()).toMatchObject({ healthy: true, reconnecting: false, reconnectAttempt: 0 });
   });
 
   it('rotates the password with a graceful rebind: nothing in flight is lost', async () => {

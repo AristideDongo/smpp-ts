@@ -1,0 +1,13 @@
+{
+  "name": "smpp-ts/interop-php8-smpp",
+  "description": "php8-smpp client for the smpp-ts server interop suite (not published)",
+  "type": "project",
+  "license": "MIT",
+  "require": {
+    "php": ">=8.1",
+    "php8-smpp/php8-smpp": "0.1.1"
+  },
+  "config": {
+    "sort-packages": true
+  }
+}

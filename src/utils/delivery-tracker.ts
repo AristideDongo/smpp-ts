@@ -65,10 +65,13 @@ export interface TrackedMessageRecord {
  * Implemented by the application: the library ships no storage. Methods may be synchronous or async.
  */
 export interface DeliveryTrackerStore {
-  /** Creates or replaces a record (on `track()` and on each final receipt). */
-  save(record: TrackedMessageRecord): void | Promise<void>;
-  /** Removes a record once its outcome has been reported. */
-  delete(key: string): void | Promise<void>;
+  /**
+   * Creates or replaces a record (on `track()` and on each final receipt). The result is ignored,
+   * except that a rejected Promise is logged: a Redis or SQL call can be returned as it is.
+   */
+  save(record: TrackedMessageRecord): unknown;
+  /** Removes a record once its outcome has been reported. Result handled as for `save`. */
+  delete(key: string): unknown;
   /** Every record still stored (called by `restore()`). */
   load(): Iterable<TrackedMessageRecord> | Promise<Iterable<TrackedMessageRecord>>;
 }
@@ -263,11 +266,11 @@ export class DeliveryTracker {
     this.storeCall(() => this.store!.save(record));
   }
 
-  private storeCall(fn: () => void | Promise<void>): void {
+  private storeCall(fn: () => unknown): void {
     try {
       const result = fn();
-      if (result && typeof (result as Promise<void>).catch === 'function') {
-        (result as Promise<void>).catch(this.onStoreError);
+      if (result && typeof (result as Promise<unknown>).catch === 'function') {
+        (result as Promise<unknown>).catch(this.onStoreError);
       }
     } catch (err) {
       this.onStoreError(err);

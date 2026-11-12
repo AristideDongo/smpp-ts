@@ -6,3 +6,4 @@ coverage
 AGENTS.md
 CLAUDE.md
 docs-site
+test/interop/clients/php8-smpp/vendor/

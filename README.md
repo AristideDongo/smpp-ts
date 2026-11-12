@@ -475,10 +475,19 @@ API reference and guides: **https://aristidedongo.github.io/smpp-ts/**
 - [Building an SMPP server](docs/guides/building-a-server.md)
 - [Going to production](docs/PRODUCTION.md)
 - [Testing an application that sends SMS](docs/guides/testing.md)
+- [Migration plan](docs/guides/migration-plan.md)
+- [Design decisions](docs/decisions.md)
 - [Comparison with other SMPP libraries](docs/guides/comparison.md)
 ## Interoperability
 
-Every pull request tests the library against implementations it did not write: the client against the **smscsim** (Go) and **jsmpp** (Java) SMSCs, the server against the **python-smpplib** (Python) and **gosmpp** (Go) clients. Matrix and instructions: [test/interop/README.md](test/interop/README.md).
+Every pull request tests the library against eight implementations it did not write:
+
+| smpp-ts as | Peer |
+|---|---|
+| Client | **Jasmin** (Python SMS gateway), **smscsim** (Go), **jsmpp** (Java), **Cloudhopper** (Java, Netty) |
+| Server | **Kannel** (C SMS gateway, `bearerbox` + `smsbox`), **python-smpplib** (Python), **gosmpp** (Go), **php8-smpp** (PHP, fork of onlinecity/php-smpp) |
+
+Matrix, versions and instructions: [test/interop/README.md](test/interop/README.md).
 ## Command line
 
 The package ships a command with two tools, handy when you have no access to an operator's test SMSC yet.
@@ -513,19 +522,36 @@ Before connecting to an operator, read the [production guide](docs/PRODUCTION.md
 
 ## Performance
 
-Measured with `npm run bench` (Node 24.21, Intel Core i5-8250U laptop, Linux). Client and server run **in the same process** on loopback TCP, so one CPU core does both sides: the figures are a lower bound for a client talking to a real SMSC. Median of 5 runs.
+Measured with `npm run bench` (Node 24.21, Intel Core i5-8250U laptop from 2017, Linux, idle machine). Median of 5 runs.
+
+**Client against an SMSC in another process.** `bench/sink.mjs` is a minimal SMSC written with `node:net` only (no SMPP library), started in its own process: the client has a CPU core to itself, as against a real SMSC. This is the figure to compare with other libraries' "against a sink" numbers.
+
+| `submit_sm` throughput | Result |
+|---|---|
+| window 10 | 61,700 msg/s |
+| window 50 | 88,000 msg/s |
+| window 100 | 90,900 msg/s |
+
+**Client and server of the library in the same process.** One CPU core does both sides: a lower bound.
 
 | Benchmark | Result |
 |---|---|
-| `submit_sm`, window 1 | 9,900 msg/s |
-| `submit_sm`, window 10 | 12,700 msg/s |
-| `submit_sm`, window 50 | 13,600 msg/s |
-| Round trip, window 1 | p50 0.09 ms · p99 0.14 ms |
-| Encode `submit_sm` | 112,000 ops/s |
-| Decode `submit_sm` | 348,000 ops/s |
-| GSM7 encoding (160 characters) | 287,000 ops/s |
-| Split a UCS2 text into 6 parts | 46,000 ops/s |
-| Parse a DLR text | 157,000 ops/s |
+| `submit_sm`, window 1 | 7,300 msg/s |
+| `submit_sm`, window 10 | 21,300 msg/s |
+| `submit_sm`, window 50 | 26,900 msg/s |
+| Round trip, window 1 | p50 0.12 ms · p99 0.18 ms |
+
+**Codec and utilities.**
+
+| Benchmark | Result |
+|---|---|
+| Encode `submit_sm` | 290,000 ops/s |
+| Decode `submit_sm` | 226,000 ops/s |
+| GSM7 encoding (160 characters) | 173,000 ops/s |
+| Split a UCS2 text into 6 parts | 28,000 ops/s |
+| Parse a DLR text | 118,000 ops/s |
+
+The writes of one batch of responses leave in a single system call (`cork` / `uncork`), the send queue is O(1), and TLVs are encoded from the parameters actually given.
 
 In practice, the operator's throughput limit (often 10 to 500 msg/s per bind) is reached long before the library's.
 

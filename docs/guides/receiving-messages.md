@@ -49,6 +49,10 @@ client.on('deliver', async (pdu) => {
 });
 ```
 
+- The answer goes back on the session the PDU arrived on. After a reconnection, answering a PDU of the old session does nothing: the SMSC delivers it again on the new one (and `dedup` drops the copy if it was already processed).
+- **Bounded:** at most `maxPendingInbound` (1,000) PDUs wait for `respond()` per session. Beyond, new ones are answered at once with `ESME_RX_T_APPN` (the SMSC delivers them again later) and not emitted, so a slow or stuck consumer cannot grow memory. `client.pendingInboundCount` gives the current number.
+- With an `SmppPool`, call `pool.respond(pdu)`: it answers through the bind the PDU came on.
+
 ## Receipts are not messages
 
 Delivery receipts also arrive as `deliver_sm`, but they are routed to `deliveryReport` / `messageStatus`, never to `message`.

@@ -544,6 +544,28 @@ export class Session extends EventEmitter<SessionEvents> {
   /** Fills the window from the queue, honouring state, backpressure and rate limit. */
   dispatch(): void {
     if (this.closed || this.writeBlocked || this.held || !isBound(this.state)) return;
+    // Writes of one dispatch leave in one system call (writev) instead of one per PDU.
+    this.cork();
+    try {
+      this.fillWindow();
+    } finally {
+      this.uncork();
+    }
+    this.emitMetric({ name: 'queue.size', type: 'gauge', value: this.queue.size });
+  }
+
+  /** Nested cork / uncork: the socket is uncorked by the outermost call only. */
+  private corked = 0;
+
+  private cork(): void {
+    if (this.corked++ === 0) this.socket.cork();
+  }
+
+  private uncork(): void {
+    if (--this.corked === 0 && !this.socket.destroyed) this.socket.uncork();
+  }
+
+  private fillWindow(): void {
     while (this.windowUsed < this.window) {
       const req = this.queue.peek();
       if (!req) break;
@@ -582,7 +604,6 @@ export class Session extends EventEmitter<SessionEvents> {
       this.writeRequest(req);
       if (this.writeBlocked) break;
     }
-    this.emitMetric({ name: 'queue.size', type: 'gauge', value: this.queue.size });
   }
 
   private write(buf: Buffer, command: CommandName, status = 0): void {
@@ -627,9 +648,15 @@ export class Session extends EventEmitter<SessionEvents> {
     this.lastReceived = Date.now();
     this.emitMetric({ name: 'bytes.in', type: 'counter', value: chunk.length });
     const { frames, error } = this.framer.push(chunk);
-    for (const frame of frames) {
-      if (this.inputHeld || this.pendingFrames.length > 0) this.pendingFrames.push(frame);
-      else this.handleFrame(frame);
+    // Responses and new requests written while handling one TCP chunk leave together.
+    this.cork();
+    try {
+      for (const frame of frames) {
+        if (this.inputHeld || this.pendingFrames.length > 0) this.pendingFrames.push(frame);
+        else this.handleFrame(frame);
+      }
+    } finally {
+      this.uncork();
     }
     if (error) {
       // Stream out of sync: the next PDU boundary cannot be found (BUG-08).

@@ -8,11 +8,12 @@
 //
 // No dependency: node:perf_hooks and the library itself.
 
+import { fork } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
 const { values: args } = parseArgs({
@@ -123,6 +124,56 @@ async function latency(count) {
   });
 }
 
+/**
+ * Starts bench/sink.mjs (raw SMSC, no library) in a child process: the client has a CPU core of its
+ * own, as against a real SMSC. This is the figure to compare with other libraries' "against a sink".
+ */
+function startSink() {
+  return new Promise((resolve, reject) => {
+    const child = fork(fileURLToPath(new URL('./sink.mjs', import.meta.url)), [], {
+      stdio: ['ignore', 'pipe', 'inherit', 'ipc'],
+    });
+    child.once('error', reject);
+    child.stdout.on('data', (d) => {
+      const m = /listening (\d+)/.exec(String(d));
+      if (m) resolve({ port: Number(m[1]), stop: () => child.kill() });
+    });
+  });
+}
+
+/** submit_sm/s from the client to the raw sink in another process. */
+async function sinkThroughput(window, count) {
+  const sink = await startSink();
+  const client = new SmppClient({
+    url: `smpp://127.0.0.1:${sink.port}`,
+    bind: { mode: 'transceiver', system_id: 'bench', password: 'bench' },
+    window,
+    maxQueueSize: 1_000_000,
+    requestTimeout: 120_000,
+    enquireLinkInterval: 0,
+    reconnect: false,
+    retry: false,
+  });
+  try {
+    await client.connect();
+    await Promise.all(Array.from({ length: Math.min(5_000, count) }, () => client.submit(submit)));
+    const start = performance.now();
+    // A bounded number of sends in progress, as an application feeding a campaign would do.
+    let next = 0;
+    const worker = async () => {
+      while (next < count) {
+        next++;
+        await client.submit(submit);
+      }
+    };
+    await Promise.all(Array.from({ length: window * 4 }, worker));
+    return (count / (performance.now() - start)) * 1000;
+  } finally {
+    await client.close();
+    sink.stop();
+  }
+}
+
 // ---------------------------------------------------------------- codec and utilities
 
 const submitPdu = encodePdu({ command: 'submit_sm', sequence_number: 1, ...submit });
@@ -164,6 +215,15 @@ for (const window of [1, 10, 50]) {
   const count = QUICK ? (window === 1 ? 2_000 : 10_000) : window === 1 ? 10_000 : 50_000;
   const runs = [];
   for (let r = 0; r < RUNS; r++) runs.push(await throughput(window, count));
+  results.e2e[name] = { median: median(runs), best: Math.max(...runs), runs };
+}
+
+for (const window of [10, 50, 100]) {
+  const name = `client → raw sink (2 processes), window ${window}`;
+  if (!want(name)) continue;
+  const count = QUICK ? 20_000 : 100_000;
+  const runs = [];
+  for (let r = 0; r < RUNS; r++) runs.push(await sinkThroughput(window, count));
   results.e2e[name] = { median: median(runs), best: Math.max(...runs), runs };
 }
 

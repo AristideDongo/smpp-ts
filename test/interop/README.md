@@ -11,12 +11,48 @@ They are not part of `npm test`: without `SMPP_INTEROP_URL`, they are skipped.
 | [Jasmin](https://github.com/jookies/jasmin) 0.11.0 | 1, target integration | Python | real SMS gateway (smpp-ts is the client; Jasmin relays to an upstream SMSC played by smpp-ts) | binds, `submit_sm`, GSM7 / UCS2 / national tables, long messages, receipts, message id formats, MO, errors, throttling, network cuts: [jasmin/README.md](jasmin/README.md) | ✅ |
 | [smscsim](https://github.com/ukarim/smscsim) | automated tests | Go | SMSC simulator (smpp-ts is the client) | `smsc.interop.ts`: bind, `enquire_link`, GSM7 / UCS2, long messages (`udh8`, `udh16`, `sar`), window, receipts | ✅ |
 | [jsmpp](https://github.com/opentelecoms-org/jsmpp) 3.0.2 | interoperability | Java | SMSC (smpp-ts is the client) | same suite, against `servers/JsmppSmsc.java` | ✅ |
+| [Cloudhopper SMPP](https://github.com/fizzed/cloudhopper-smpp) 5.0.9 | interoperability | Java (Netty 3) | SMSC (smpp-ts is the client) | same suite, against `servers/CloudhopperSmsc.java` | ✅ |
 | [python-smpplib](https://github.com/python-smpplib/python-smpplib) 2.2.4 | interoperability | Python | client (smpp-ts is the server) | `server.interop.ts`: bind, short GSM7 and long UCS2 split by the peer, receipts, MO, unbind | ✅ |
 | [gosmpp](https://github.com/linxGnu/gosmpp) 0.3.1 | interoperability | Go | client (smpp-ts is the server) | same scenario | ✅ |
-| [Kannel](https://www.kannel.org/) | complementary | C | client (smpp-ts would be the server) | — | not covered yet |
+| [php8-smpp](https://github.com/php8-smpp/php8-smpp) 0.1.1 (fork of onlinecity/php-smpp) | interoperability | PHP | client (smpp-ts is the server) | same scenario, `clients/php8-smpp/client.php` (see the note below) | ✅ |
+| [Kannel](https://www.kannel.org/) 1.4.5 | real SMS gateway | C | client: `bearerbox` binds to smpp-ts, `smsbox` serves HTTP | `kannel/kannel.interop.ts`: bind, GSM7 via `sendsms`, long UCS2 (concatenated, reassembled), receipts to `dlr-url` matched to the message ids, MO to `get-url`, unbind on shutdown | ✅ |
 | [@larvit/smpp](https://www.npmjs.com/package/@larvit/smpp) | comparative reference | TypeScript | — | feature comparison only ([docs/guides/comparison.md](../../docs/guides/comparison.md)); no test, to keep it out of the dependencies | — |
 
-✅ = passes locally and in CI. The jsmpp jars are downloaded from Maven Central and checked against a SHA-256.
+✅ = passes locally and in CI. The jsmpp and Cloudhopper jars are downloaded from Maven Central and checked against a SHA-256; Kannel and PHP come from the Ubuntu archive; php8-smpp is pinned by `clients/php8-smpp/composer.lock`.
+
+**php8-smpp 0.1.1 cannot read delivery receipts.** Its parser assigns the receipt id (a string) to `DeliveryReceipt::$id`, typed `int`, under `strict_types`: every receipt throws `Cannot assign string to property … of type int`, whatever the id. The test client catches it, answers the `deliver_sm` itself and reads the id from the receipt text. The PDUs sent by smpp-ts are standard (the same receipts pass with every other peer).
+
+SMPPSim (Selenium Software) is not in the matrix: its original site is gone and no mirror offers a download we can check.
+
+## Kannel (smpp-ts server)
+
+```sh
+sudo apt-get install kannel          # Ubuntu / Debian: bearerbox and smsbox 1.4.5
+npm run test:kannel                  # KANNEL_BIN=/usr/sbin by default on Debian systems
+```
+
+The test writes its own `kannel.conf` (free ports, `dlr-storage = internal`), starts `bearerbox` and `smsbox`, and serves `get-url` / `dlr-url` itself. Details: [kannel/README.md](kannel/README.md).
+
+## Cloudhopper (smpp-ts client)
+
+```sh
+M=https://repo1.maven.org/maven2
+curl -sSfLo ch-smpp.jar $M/com/fizzed/ch-smpp/5.0.9/ch-smpp-5.0.9.jar
+curl -sSfLo ch-commons-util.jar $M/com/cloudhopper/ch-commons-util/6.0.2/ch-commons-util-6.0.2.jar
+curl -sSfLo ch-commons-charset.jar $M/com/cloudhopper/ch-commons-charset/3.0.2/ch-commons-charset-3.0.2.jar
+curl -sSfLo netty.jar $M/io/netty/netty/3.9.6.Final/netty-3.9.6.Final.jar
+curl -sSfLo slf4j-api.jar $M/org/slf4j/slf4j-api/1.7.13/slf4j-api-1.7.13.jar
+java -cp ch-smpp.jar:ch-commons-util.jar:ch-commons-charset.jar:netty.jar:slf4j-api.jar \
+  test/interop/servers/CloudhopperSmsc.java 2775 &
+SMPP_INTEROP_URL=smpp://127.0.0.1:2775 npm run test:interop
+```
+
+## php8-smpp (smpp-ts server)
+
+```sh
+composer install -d test/interop/clients/php8-smpp     # PHP 8.1+, ext-sockets, ext-mbstring
+SMPP_INTEROP_CLIENT="php test/interop/clients/php8-smpp/client.php" npm run test:interop
+```
 
 ## Server side: a third-party client against `SmppServer`
 

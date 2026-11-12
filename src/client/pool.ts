@@ -383,6 +383,20 @@ export class SmppPool extends EventEmitter<PoolEvents> {
     return this.request('replace_sm', { ...params, message_id: messageId }, options);
   }
 
+  /**
+   * Answers a deliver_sm / data_sm manually (with `autoAck: false`), through the bind it arrived on.
+   * Does nothing if it was already answered or its session closed.
+   */
+  respond(pdu: DeliverSm | DataSm, params: { command_status?: number; message_id?: string } = {}): void {
+    const member = this.members.find((m) => m.isPendingInbound(pdu));
+    member?.respond(pdu, params);
+  }
+
+  /** Incoming PDUs waiting for `respond()`, all members together. */
+  get pendingInboundCount(): number {
+    return this.members.reduce((n, m) => n + m.pendingInboundCount, 0);
+  }
+
   private async withMember<T>(send: (member: SmppClient) => Promise<T>): Promise<T> {
     if (this.closing) {
       throw new SmppStateError('send', 'CLOSING', COMMAND_STATUS.ESME_RINVBNDSTS, 'Pool is closing');
