@@ -1,0 +1,32 @@
+name: Operator variant
+description: An SMSC behaves differently from the specification (receipt format, message_id, UDH, TLVs…).
+labels: [interop]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is how the "known operator variants" guide grows. Mask credentials and subscriber numbers.
+  - type: input
+    id: operator
+    attributes:
+      label: Operator or SMSC software
+      placeholder: Name, country, software and version if known
+    validations:
+      required: true
+  - type: textarea
+    id: variant
+    attributes:
+      label: What differs
+      description: Receipt text, message_id format, data_coding, TLVs, bind quirks, rate limits…
+    validations:
+      required: true
+  - type: textarea
+    id: capture
+    attributes:
+      label: PDU capture (hexadecimal, anonymized)
+      description: See test/fixtures/README.md for the anonymizer.
+      render: text
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What makes it work today

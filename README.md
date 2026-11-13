@@ -4,6 +4,7 @@
 [![CI](https://github.com/AristideDongo/smpp-ts/actions/workflows/ci.yml/badge.svg)](https://github.com/AristideDongo/smpp-ts/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Coverage](https://img.shields.io/endpoint?url=https://aristidedongo.github.io/smpp-ts/coverage-badge.json)](https://aristidedongo.github.io/smpp-ts/)
+[![CodeQL](https://github.com/AristideDongo/smpp-ts/actions/workflows/codeql.yml/badge.svg)](https://github.com/AristideDongo/smpp-ts/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/AristideDongo/smpp-ts/badge)](https://scorecard.dev/viewer/?uri=github.com/AristideDongo/smpp-ts)
 [![Zero dependencies](https://img.shields.io/badge/runtime%20dependencies-0-brightgreen)](package.json)
 
@@ -58,6 +59,7 @@ await client.close({ drain: true });
 | Method | Purpose |
 |---|---|
 | `sendText({ to, from, text, … })` | Picks the encoding, splits the text and returns every `message_id` |
+| `sendTextMulti({ to: [...], from, text, … })` | Same text to up to 254 numbers or distribution lists with `submit_multi`; refused destinations come back in `refused` |
 | `submit(params)` | Low-level `submit_sm` |
 | `query(id)`, `cancel(id)`, `replace(id, params)` | `query_sm`, `cancel_sm`, `replace_sm` |
 | `request(command, params)` | Any SMPP command |
@@ -323,6 +325,26 @@ pool.on('messageStatus', (s) => console.log(s.outcome));
 - Receipts and incoming messages are processed once for the whole pool. A receipt can arrive on another bind than its `submit_sm`, and the segments of a long incoming message can arrive on different binds: `messageStatus` and `message` still work.
 - `pool.members` gives access to each `SmppClient` (state, `raw` API).
 
+### SMSC-initiated sessions (outbind)
+
+Some operators connect to you instead of the reverse: the SMSC opens the connection, sends `outbind` with its credentials, and expects a `bind_receiver`. `OutbindServer` listens, checks the credentials and hands you an ordinary bound client per connection:
+
+```ts
+import { OutbindServer, safeCompare } from 'smpp-ts';
+
+const outbind = new OutbindServer({
+  authenticate: ({ system_id, password }) => system_id === 'smsc' && safeCompare(password, 'pw'),
+  client: { bind: { system_id: 'xxx', password: 'yyy' } },   // receiver by default
+});
+outbind.on('session', (client, info) => {
+  client.on('message', (msg) => console.log(msg.from, msg.text));
+  client.on('deliveryReport', (dlr) => console.log(dlr.messageId, dlr.status));
+});
+await outbind.listen(2775);
+```
+
+A connection that sends something else first, wrong credentials, or nothing within `outbindTimeout` is closed without a hint. `maxSessions` bounds the bound clients. The `socket` option of `SmppClient` is what makes this work: it binds on any already open connection.
+
 ## Testing your application
 
 `smpp-ts/testing` starts an SMSC in the test process: it records what the application sends, answers it, sends receipts and incoming messages, and reproduces the failures that are hard to get from a real SMSC.
@@ -475,6 +497,8 @@ API reference and guides: **https://aristidedongo.github.io/smpp-ts/**
 - [Building an SMPP server](docs/guides/building-a-server.md)
 - [Going to production](docs/PRODUCTION.md)
 - [Testing an application that sends SMS](docs/guides/testing.md)
+- [Troubleshooting](docs/guides/troubleshooting.md)
+- [Known operator variants](docs/guides/operators.md)
 - [Migration plan](docs/guides/migration-plan.md)
 - [Design decisions](docs/decisions.md)
 - [Comparison with other SMPP libraries](docs/guides/comparison.md)
@@ -568,6 +592,7 @@ node bench/compare.mjs base.json head.json      # comparison, exit code 1 on reg
 ```sh
 npm test               # unit, property, fuzzing (20,000 iterations), integration
 npm run fuzz           # parser fuzzing, 1,000,000 iterations
+npm run soak           # 200,000 messages with receipts and disconnections, memory must stay flat
 npm run coverage
 npm run test:runtime   # smoke test on the built package (also: bun / deno run -A test/runtime/smoke.mjs)
 npm run test:interop   # against third-party SMSCs and clients, see test/interop/README.md

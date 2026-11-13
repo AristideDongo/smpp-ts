@@ -2,15 +2,27 @@
 export { SmppClient } from './client/client.js';
 export { SmppPool } from './client/pool.js';
 export type { PoolEvents, PoolHealth, PoolStrategy, SmppPoolOptions } from './client/pool.js';
+export { OutbindServer } from './client/outbind.js';
+export type {
+  OutbindInfo,
+  OutbindRejection,
+  OutbindServerEvents,
+  OutbindServerOptions,
+} from './client/outbind.js';
 export { InboundProcessor } from './client/inbound.js';
 export type { InboundProcessorOptions, InboundSink } from './client/inbound.js';
 export type {
   BindOptions,
   ClientEvents,
   ClientHealth,
+  ClientSocket,
   EstimateOptions,
   InboundMessage,
   RawApi,
+  MultiDestination,
+  RefusedDestination,
+  SendTextMultiOptions,
+  SendTextMultiResult,
   SendTextOptions,
   SendTextResult,
   SmppClientOptions,

@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import type { Duplex } from 'node:stream';
 import {
   type CodecOptions,
   type DataSm,
@@ -23,9 +24,14 @@ import {
 } from '../errors.js';
 import { type Logger, silentLogger } from '../logger.js';
 import type { Metric } from '../metrics.js';
-import { COMMANDS, type RequestCommandName, responseNameOf } from '../protocol/commands.js';
+import { COMMANDS, type DestAddress, type RequestCommandName, responseNameOf } from '../protocol/commands.js';
 import { REGISTERED_DELIVERY } from '../protocol/constants.js';
-import { COMMAND_STATUS, type StatusCategory, defaultStatusClassifier } from '../protocol/status.js';
+import {
+  COMMAND_STATUS,
+  type StatusCategory,
+  defaultStatusClassifier,
+  statusName,
+} from '../protocol/status.js';
 import { type RateLimitOptions, TokenBucket } from '../session/rate-limiter.js';
 import { type RequestOptions, type ResponseOf, type SequenceGenerator, Session } from '../session/session.js';
 import { type BindMode, type SessionState, canSendInMode } from '../session/state-machine.js';
@@ -57,6 +63,9 @@ export type { InboundMessage } from './inbound.js';
  * @internal Wiring used by `SmppPool`: its members share inbound processing (reassembly, receipts)
  * and concatenation references.
  */
+/** A connection the client can bind on (`socket` option). */
+export type ClientSocket = Duplex & { remoteAddress?: string; remotePort?: number };
+
 export interface ClientInternals {
   inbound?: InboundProcessor;
   nextConcatRef?: () => number;
@@ -81,6 +90,12 @@ export interface SmppClientOptions {
   port?: number;
   /** Enables TLS (and/or sets its options). Certificate verification is on by default. */
   tls?: boolean | TlsClientOptions;
+  /**
+   * An already open connection to bind on, instead of `url` / `host`: a connection received by
+   * `OutbindServer`, or one opened through a proxy. It can be bound once: automatic reconnection
+   * is off (`reconnect` is ignored), the client closes for good when the connection drops.
+   */
+  socket?: ClientSocket;
   bind: BindOptions;
 
   /** Concurrent in-flight requests. Default: 10. */
@@ -229,6 +244,35 @@ export interface SendTextResult {
   replacements: number;
 }
 
+/** A `sendTextMulti` destination: a number, or a distribution list defined on the SMSC. */
+export type MultiDestination = string | { list: string };
+
+export interface SendTextMultiOptions extends Omit<SendTextOptions, 'to' | 'params' | 'reference'> {
+  /** Destinations (1 to 254): numbers and/or distribution lists (`{ list: 'name' }`). */
+  to: readonly MultiDestination[];
+  /** Extra submit_multi parameters (TLVs…). */
+  params?: PduParams<'submit_multi'>;
+}
+
+/** A destination the SMSC refused in a `submit_multi_resp`. */
+export interface RefusedDestination {
+  to: string;
+  /** Segment index (0-based) the refusal came from. */
+  part: number;
+  status: number;
+  statusName: string;
+}
+
+export interface SendTextMultiResult {
+  /** One message_id per segment (shared by every destination of that segment). */
+  messageIds: string[];
+  parts: number;
+  encoding: string;
+  replacements: number;
+  /** Destinations the SMSC refused, empty when every one was accepted. */
+  refused: RefusedDestination[];
+}
+
 /** Text and options `estimate` takes: the encoding-related subset of `SendTextOptions`. */
 export type EstimateOptions = Pick<
   SendTextOptions,
@@ -324,6 +368,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
   private sleeper: { cancel: () => void } | undefined;
   private concatRef = Math.floor(Math.random() * 0x10000);
   private reconnectAttempt = 0;
+  private providedSocketUsed = false;
   private boundAt: number | undefined;
   private rebinding: Promise<void> | undefined;
   /** Session each unanswered incoming PDU came on (`autoAck: false`): the answer goes back there. */
@@ -344,7 +389,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     this.registry = options.encodings ?? encodings;
     this.rateLimiter = options.rateLimit ? new TokenBucket(options.rateLimit) : undefined;
     this.reconnectOptions =
-      options.reconnect === false
+      options.reconnect === false || options.socket
         ? undefined
         : options.reconnect === true || options.reconnect === undefined
           ? {}
@@ -460,12 +505,14 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     const o = this.options;
     // Persisted tracking (trackDeliveries.store) is reloaded before the first bind: receipts may follow at once.
     await this.inbound.tracker?.restore();
-    const socket = await connectSocket(this.endpoint, {
-      ...(o.connectTimeout !== undefined ? { connectTimeout: o.connectTimeout } : {}),
-      ...(this.tlsOptions ? { tls: this.tlsOptions } : {}),
-      logger: this.logger,
-      signal,
-    });
+    const socket = o.socket
+      ? this.takeProvidedSocket(o.socket)
+      : await connectSocket(this.endpoint, {
+          ...(o.connectTimeout !== undefined ? { connectTimeout: o.connectTimeout } : {}),
+          ...(this.tlsOptions ? { tls: this.tlsOptions } : {}),
+          logger: this.logger,
+          signal,
+        });
     if (this.closing) {
       socket.destroy();
       throw new SmppConnectionClosedError(false, 'Client closed during connect');
@@ -499,6 +546,9 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     session.on('error', (err) => this.emitError(err));
     session.on('pdu', (pdu) => this.onPdu(session, pdu));
     session.on('close', (err) => this.onSessionClose(session, err));
+    // A provided socket was paused by whoever read its first bytes (OutbindServer): the session
+    // listens now, the bytes it kept can flow.
+    if (o.socket) socket.resume();
 
     const { mode, ...bindParams } = this.bindOptions;
     const onAbort = () => session.destroy();
@@ -518,6 +568,15 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     }
     this.boundAt = Date.now();
     this.emitSafe('bound', this.bindOptions.system_id);
+  }
+
+  /** The `socket` option is bound once: a second bind (re-bind, reconnection) has nothing to open. */
+  private takeProvidedSocket(socket: ClientSocket): ClientSocket {
+    if (this.providedSocketUsed || socket.destroyed) {
+      throw new SmppConnectionClosedError(false, 'The provided socket is closed or already bound');
+    }
+    this.providedSocketUsed = true;
+    return socket;
   }
 
   private onSessionClose(session: Session, err: Error | undefined): void {
@@ -762,36 +821,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
       ton: opts.destTon,
       npi: opts.destNpi,
     });
-    const mp = this.options.multipart ?? {};
-    const segmentOptions = this.segmentOptions(opts);
-    const prepared = prepareText(opts.text, segmentOptions);
-    const reference = this.nextConcatRef();
-    const built = buildParts(prepared.text, {
-      ...segmentOptions,
-      reference,
-      ...(mp.packGsm7 !== undefined ? { packGsm7: mp.packGsm7 } : {}),
-      ...(opts.params?.esm_class !== undefined ? { esmClass: opts.params.esm_class } : {}),
-    });
-
-    const maxSegments = opts.maxSegments ?? mp.maxSegments ?? 255;
-    if (built.parts.length > maxSegments) {
-      throw new SmppValidationError(
-        `Text needs ${built.parts.length} segments, over maxSegments (${maxSegments})`,
-        'text',
-        COMMAND_STATUS.ESME_RINVMSGLEN,
-      );
-    }
-    if (opts.flash) {
-      const dataCoding = flashDataCoding(built.dataCoding);
-      for (const part of built.parts) part.data_coding = dataCoding;
-    }
-
-    const registered =
-      opts.registeredDelivery === true
-        ? REGISTERED_DELIVERY.FINAL
-        : opts.registeredDelivery === false || opts.registeredDelivery === undefined
-          ? REGISTERED_DELIVERY.NONE
-          : opts.registeredDelivery;
+    const { built, prepared, registered } = this.prepareOutbound(opts);
 
     const base: PduParams<'submit_sm'> = {
       service_type: opts.serviceType ?? '',
@@ -847,12 +877,126 @@ export class SmppClient extends EventEmitter<ClientEvents> {
   }
 
   /**
+   * Sends one text to several destinations with `submit_multi` (one PDU per segment, whatever the
+   * number of destinations): encoding, splitting and addresses are handled as in `sendText`.
+   * A destination the SMSC refuses does not fail the call: it is listed in `refused`.
+   */
+  async sendTextMulti(opts: SendTextMultiOptions): Promise<SendTextMultiResult> {
+    if (opts.to.length === 0 || opts.to.length > 254) {
+      throw new SmppValidationError(
+        `submit_multi takes 1 to 254 destinations (${opts.to.length} given)`,
+        'to',
+        COMMAND_STATUS.ESME_RINVNUMDESTS,
+      );
+    }
+    const addressing = this.options.address ?? {};
+    const source = resolveAddress(opts.from, 'source', {
+      ...addressing,
+      ton: opts.sourceTon,
+      npi: opts.sourceNpi,
+    });
+    const destinations: DestAddress[] = opts.to.map((d) => {
+      if (typeof d !== 'string') {
+        if (d.list.length === 0 || d.list.length > 20) {
+          throw new SmppValidationError('A distribution list name has 1 to 20 characters', 'to');
+        }
+        return { dest_flag: 2, dl_name: d.list };
+      }
+      const dest = resolveAddress(d, 'destination', { ...addressing, ton: opts.destTon, npi: opts.destNpi });
+      return { dest_flag: 1, dest_addr_ton: dest.ton, dest_addr_npi: dest.npi, destination_addr: dest.addr };
+    });
+    const { built, prepared, registered } = this.prepareOutbound(opts);
+    const base: PduParams<'submit_multi'> = {
+      service_type: opts.serviceType ?? '',
+      source_addr_ton: source.ton,
+      source_addr_npi: source.npi,
+      source_addr: source.addr,
+      dest_address: destinations,
+      registered_delivery: registered,
+      priority_flag: opts.priority ?? 0,
+      validity_period: toSmppTime(opts.validityPeriod),
+      schedule_delivery_time: toSmppTime(opts.scheduleDeliveryTime),
+      ...opts.params,
+    };
+    const requestOptions = {
+      ...(opts.timeout !== undefined ? { timeout: opts.timeout } : {}),
+      ...(opts.signal ? { signal: opts.signal } : {}),
+      ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
+    };
+    const results = await Promise.allSettled(
+      built.parts.map((part) => this.request('submit_multi', { ...base, ...part }, requestOptions)),
+    );
+    if (results.some((r) => r.status === 'rejected')) {
+      if (results.length === 1 && results[0]?.status === 'rejected') throw results[0].reason;
+      throw new SmppMultipartError(
+        results.map((r) =>
+          r.status === 'fulfilled' ? { messageId: r.value.message_id } : { error: toError(r.reason) },
+        ),
+      );
+    }
+    const responses = results.map((r) => (r as PromiseFulfilledResult<ResponseOf<'submit_multi'>>).value);
+    const refused: RefusedDestination[] = [];
+    responses.forEach((resp, part) => {
+      for (const u of resp.unsuccess_sme ?? []) {
+        refused.push({
+          to: u.destination_addr,
+          part,
+          status: u.error_status_code,
+          statusName: statusName(u.error_status_code),
+        });
+      }
+    });
+    const messageIds = responses.map((r) => r.message_id);
+    const tracker = this.inbound.tracker;
+    if (tracker && refused.length === 0 && wantsFinalReceipt(registered)) tracker.track(messageIds);
+    return {
+      messageIds,
+      parts: built.parts.length,
+      encoding: built.encoding.toUpperCase(),
+      replacements: prepared.replacements.length,
+      refused,
+    };
+  }
+
+  /**
    * What `sendText` would do with a text, without sending anything: encoding, segments (each billed as
    * one SMS), characters that force UCS2, and what GSM7 normalization saves. Uses the client's
    * `multipart` and `normalize` options.
    */
   estimate(opts: EstimateOptions): TextEstimate {
     return estimateText(opts.text, this.segmentOptions(opts));
+  }
+
+  /** Encodes and splits a text, applies `maxSegments` and `flash`, resolves `registeredDelivery`. */
+  private prepareOutbound(opts: Omit<SendTextOptions, 'to' | 'from'> & { params?: { esm_class?: number } }) {
+    const mp = this.options.multipart ?? {};
+    const segmentOptions = this.segmentOptions(opts);
+    const prepared = prepareText(opts.text, segmentOptions);
+    const built = buildParts(prepared.text, {
+      ...segmentOptions,
+      reference: this.nextConcatRef(),
+      ...(mp.packGsm7 !== undefined ? { packGsm7: mp.packGsm7 } : {}),
+      ...(opts.params?.esm_class !== undefined ? { esmClass: opts.params.esm_class } : {}),
+    });
+    const maxSegments = opts.maxSegments ?? mp.maxSegments ?? 255;
+    if (built.parts.length > maxSegments) {
+      throw new SmppValidationError(
+        `Text needs ${built.parts.length} segments, over maxSegments (${maxSegments})`,
+        'text',
+        COMMAND_STATUS.ESME_RINVMSGLEN,
+      );
+    }
+    if (opts.flash) {
+      const dataCoding = flashDataCoding(built.dataCoding);
+      for (const part of built.parts) part.data_coding = dataCoding;
+    }
+    const registered: number =
+      opts.registeredDelivery === true
+        ? REGISTERED_DELIVERY.FINAL
+        : opts.registeredDelivery === false || opts.registeredDelivery === undefined
+          ? REGISTERED_DELIVERY.NONE
+          : opts.registeredDelivery;
+    return { built, prepared, registered };
   }
 
   private segmentOptions(opts: EstimateOptions) {
@@ -1007,6 +1151,9 @@ export class SmppClient extends EventEmitter<ClientEvents> {
 }
 
 function resolveEndpoint(o: SmppClientOptions): Endpoint {
+  if (o.socket) {
+    return { host: o.socket.remoteAddress ?? 'socket', port: o.socket.remotePort ?? 0, tls: false };
+  }
   if (o.url) {
     const ep = parseSmppUrl(o.url);
     if (o.tls) ep.tls = true;

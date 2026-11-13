@@ -1,13 +1,24 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual } from 'node:crypto';
+
+/** Compared length: hides the length of any SMPP password (9 octets at most) and of most API keys. */
+const COMPARE_LENGTH = 64;
 
 /**
- * Compares two strings in constant time (independent of content AND length),
- * for simple `authenticate` hook implementations (SEC-06).
+ * Compares two strings in constant time (independent of content AND length, up to 64 octets),
+ * for simple `authenticate` hook implementations (SEC-06). Nothing is hashed: both values are
+ * padded to the same length and compared with `crypto.timingSafeEqual`.
  */
 export function safeCompare(a: string, b: string): boolean {
-  const ha = createHash('sha256').update(a, 'utf8').digest();
-  const hb = createHash('sha256').update(b, 'utf8').digest();
-  return timingSafeEqual(ha, hb);
+  const ba = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
+  const length = Math.max(COMPARE_LENGTH, ba.length, bb.length);
+  const pa = Buffer.alloc(length);
+  const pb = Buffer.alloc(length);
+  ba.copy(pa);
+  bb.copy(pb);
+  // The comparison always runs over the whole padded buffers, whatever the lengths.
+  const sameContent = timingSafeEqual(pa, pb);
+  return sameContent && ba.length === bb.length;
 }
 
 export interface BindFailurePolicy {
