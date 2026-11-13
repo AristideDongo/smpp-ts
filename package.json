@@ -11,7 +11,7 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "smpp-ts": "./dist/cli.js"
+    "smpp-ts": "dist/cli.js"
   },
   "exports": {
     ".": {
