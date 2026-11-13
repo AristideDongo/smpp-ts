@@ -4,7 +4,8 @@
  *
  *   OUTBIND_SYSTEM_ID=smsc OUTBIND_PASSWORD=pw SMPP_USER=xxx SMPP_PASSWORD=yyy npx tsx examples/outbind.ts
  */
-import { OutbindServer, safeCompare } from 'smpp-ts';
+// In your project: import { OutbindServer, safeCompare } from 'smpp-ts';
+import { OutbindServer, safeCompare } from '../src/index.js';
 
 const outbind = new OutbindServer({
   // Credentials the SMSC presents in its outbind (constant-time comparison).
