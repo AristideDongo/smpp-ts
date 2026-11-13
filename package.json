@@ -1,6 +1,6 @@
 {
   "name": "smpp-ts",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "SMPP v3.4/v5.0 client and server in TypeScript: secure by default, production-ready, zero runtime dependencies.",
   "license": "MIT",
   "type": "module",
@@ -11,7 +11,7 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "smpp-ts": "./dist/cli.js"
+    "smpp-ts": "dist/cli.js"
   },
   "exports": {
     ".": {
