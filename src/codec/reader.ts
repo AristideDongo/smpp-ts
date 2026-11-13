@@ -57,6 +57,11 @@ export class Reader {
    * The search for the null is limited to min(end of PDU, max): never an out-of-bounds read.
    */
   cstring(field: string, max: number, strict = true): string {
+    // Empty string (most optional fields): no search, no string allocation.
+    if (this.offset < this.end && this.buf[this.offset] === 0) {
+      this.offset++;
+      return '';
+    }
     const limit = strict ? Math.min(this.end, this.offset + max) : this.end;
     let i = this.offset;
     while (i < limit && this.buf[i] !== 0) i++;

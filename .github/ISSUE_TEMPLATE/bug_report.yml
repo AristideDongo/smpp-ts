@@ -1,0 +1,44 @@
+name: Bug report
+description: Something does not behave as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Never paste real credentials (system_id, password, SMSC address) or real subscribers' numbers. Mask them.
+  - type: input
+    id: version
+    attributes:
+      label: smpp-ts version
+      placeholder: npm ls smpp-ts
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: Runtime
+      placeholder: Node 22.11 / Bun 1.2 / Deno 2.1, Linux
+    validations:
+      required: true
+  - type: input
+    id: peer
+    attributes:
+      label: SMSC or client on the other side
+      placeholder: Operator name, Kannel 1.4.5, Jasmin 0.11, SMPPSim…
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: A minimal script, or the PDUs in hexadecimal (a `debug` logger prints them, with passwords masked).
+      render: ts
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      render: text

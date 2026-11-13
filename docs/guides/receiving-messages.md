@@ -53,6 +53,28 @@ client.on('deliver', async (pdu) => {
 - **Bounded:** at most `maxPendingInbound` (1,000) PDUs wait for `respond()` per session. Beyond, new ones are answered at once with `ESME_RX_T_APPN` (the SMSC delivers them again later) and not emitted, so a slow or stuck consumer cannot grow memory. `client.pendingInboundCount` gives the current number.
 - With an `SmppPool`, call `pool.respond(pdu)`: it answers through the bind the PDU came on.
 
+## When the SMSC connects to you (outbind)
+
+Some operators do not let you connect: their SMSC opens the connection, sends `outbind` with
+credentials, and expects a `bind_receiver`. `OutbindServer` does that and gives you a bound client
+per connection, with the same `message` and `deliveryReport` events:
+
+```ts
+import { OutbindServer, safeCompare } from 'smpp-ts';
+
+const outbind = new OutbindServer({
+  authenticate: ({ system_id, password }) => system_id === 'smsc' && safeCompare(password, 'pw'),
+  client: { bind: { system_id: 'xxx', password: 'yyy' } },
+});
+outbind.on('session', (client) => {
+  client.on('message', (msg) => console.log(`${msg.from} → ${msg.to}: ${msg.text}`));
+});
+await outbind.listen(2775);
+```
+
+The SMSC decides when to reconnect: there is no automatic reconnection on these clients, listen to
+their `close` event if you need to alert.
+
 ## Receipts are not messages
 
 Delivery receipts also arrive as `deliver_sm`, but they are routed to `deliveryReport` / `messageStatus`, never to `message`.

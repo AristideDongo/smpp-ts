@@ -1,0 +1,20 @@
+# Keeps the development tools and the GitHub Actions current. Nothing here reaches the published
+# package: smpp-ts has no runtime dependency. Updates are grouped into one pull request a month.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      dev-tools:
+        patterns: ['*']
+    labels: [dependencies]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ['*']
+    labels: [dependencies]

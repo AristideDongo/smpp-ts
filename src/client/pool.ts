@@ -22,6 +22,8 @@ import {
   type BindOptions,
   type ClientHealth,
   type EstimateOptions,
+  type SendTextMultiOptions,
+  type SendTextMultiResult,
   type SendTextOptions,
   type SendTextResult,
   SmppClient,
@@ -357,6 +359,11 @@ export class SmppPool extends EventEmitter<PoolEvents> {
   /** `SmppClient.sendText` through one member: every segment goes through the same bind. */
   sendText(opts: SendTextOptions): Promise<SendTextResult> {
     return this.withMember((m) => m.sendText(opts));
+  }
+
+  /** `SmppClient.sendTextMulti` through one member. */
+  sendTextMulti(opts: SendTextMultiOptions): Promise<SendTextMultiResult> {
+    return this.withMember((m) => m.sendTextMulti(opts));
   }
 
   query(
