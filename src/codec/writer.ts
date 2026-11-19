@@ -6,12 +6,21 @@ export class Writer {
   private buf: Buffer;
   private offset = 0;
 
-  constructor(initialSize = 256) {
+  constructor(private readonly initialSize = 256) {
     this.buf = Buffer.allocUnsafe(initialSize);
   }
 
   get length(): number {
     return this.offset;
+  }
+
+  /**
+   * Rewinds the writer so its buffer can be used again, which saves one allocation per PDU.
+   * A buffer grown past `maxKeep` by one large PDU is released instead of being kept around.
+   */
+  reset(maxKeep = 64 * 1024): void {
+    this.offset = 0;
+    if (this.buf.length > maxKeep) this.buf = Buffer.allocUnsafe(this.initialSize);
   }
 
   private ensure(n: number): void {
@@ -59,11 +68,16 @@ export class Writer {
     if (typeof value !== 'string') {
       throw new SmppValidationError(`Field ${field} must be a string`, field);
     }
-    const bytes = Buffer.byteLength(value, 'latin1');
     // Reject characters outside Latin-1 (silent loss) and embedded nulls (truncation).
-    if (/[^\x01-\xff]/.test(value)) {
-      throw new SmppValidationError(`Field ${field} contains characters that cannot be encoded`, field);
+    // A char-code loop instead of a regex: every C-string of every PDU goes through here.
+    for (let i = 0; i < value.length; i++) {
+      const code = value.charCodeAt(i);
+      if (code === 0 || code > 0xff) {
+        throw new SmppValidationError(`Field ${field} contains characters that cannot be encoded`, field);
+      }
     }
+    // Latin-1 is one octet per code unit, and every code unit is in range by now.
+    const bytes = value.length;
     if (bytes + 1 > max) {
       throw new SmppValidationError(
         `Field ${field} is too long (${bytes} octets, max ${max - 1} + NULL)`,

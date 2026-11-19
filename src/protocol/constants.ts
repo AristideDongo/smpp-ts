@@ -126,6 +126,10 @@ export const DEST_FLAG = {
 /** UDH IEIs used by the library. */
 export const UDH_IEI = {
   CONCAT_8BIT: 0x00,
+  /** Application port addressing, 8-bit (WAP push, vCard, binary content). */
+  PORTS_8BIT: 0x04,
+  /** Application port addressing, 16-bit. */
+  PORTS_16BIT: 0x05,
   CONCAT_16BIT: 0x08,
   NATIONAL_SINGLE_SHIFT: 0x24,
   NATIONAL_LOCKING_SHIFT: 0x25,

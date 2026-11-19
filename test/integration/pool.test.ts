@@ -70,6 +70,73 @@ describe('SmppPool', () => {
     expect(perSession).toEqual([10, 10, 10]);
   });
 
+  it('failover sends everything through the first bind and falls back when it dies', async () => {
+    const { server, port, handledBy } = await startServer();
+    const pool = makePool(port, { size: 2, strategy: 'failover', minBound: 2, reconnect: false });
+    await pool.connect();
+    for (let i = 0; i < 6; i++) await pool.submit(submit);
+    // Everything went to one bind: the second one is a standby, not a share of the traffic.
+    expect(new Set(handledBy).size).toBe(1);
+    const primary = handledBy[0]!;
+
+    primary.session.destroy();
+    await until(() => pool.boundCount === 1);
+    const before = handledBy.length;
+    for (let i = 0; i < 3; i++) await pool.submit(submit);
+    const after = handledBy.slice(before);
+    // The standby took over, by itself, with nothing lost.
+    expect(after).toHaveLength(3);
+    expect(new Set(after).size).toBe(1);
+    expect(after[0]).not.toBe(primary);
+    expect(server.sessionsFor('acme').length).toBe(1);
+  });
+
+  it('round-robin follows the weights, and weight 0 stays a backup', async () => {
+    const { port, handledBy } = await startServer();
+    const pool = makePool(port, {
+      members: [{ weight: 3 }, { weight: 1 }],
+      strategy: 'round-robin',
+      minBound: 2,
+    });
+    await pool.connect();
+    for (let i = 0; i < 20; i++) await pool.submit(submit);
+    const counts = new Map<unknown, number>();
+    for (const h of handledBy) counts.set(h, (counts.get(h) ?? 0) + 1);
+    const shares = [...counts.values()].sort((a, b) => b - a);
+    expect(shares).toHaveLength(2);
+    // Three for one: 15/5 exactly, with a margin for the first turn.
+    expect(shares[0]).toBeGreaterThan(shares[1]! * 2);
+
+    const backupPool = makePool(port, {
+      members: [{}, { weight: 0 }],
+      strategy: 'least-busy',
+      minBound: 2,
+    });
+    const before = handledBy.length;
+    await backupPool.connect();
+    for (let i = 0; i < 6; i++) await backupPool.submit(submit);
+    expect(new Set(handledBy.slice(before)).size).toBe(1);
+  });
+
+  it('refuses a negative weight at construction', async () => {
+    const { port } = await startServer();
+    expect(() => makePool(port, { members: [{ weight: -1 }] })).toThrow(/weight/);
+  });
+
+  it('sendBinary goes through one bind, with every segment on it', async () => {
+    const { port, handledBy } = await startServer();
+    const pool = makePool(port, { size: 2, minBound: 2 });
+    await pool.connect();
+    const res = await pool.sendBinary({
+      to: '2250700000000',
+      from: 'OTA',
+      data: Buffer.alloc(400, 3),
+      destPort: 2948,
+    });
+    expect(res.parts).toBeGreaterThan(1);
+    expect(new Set(handledBy).size).toBe(1);
+  });
+
   it('least-busy uses every bind under concurrent load', async () => {
     const { server, port, handledBy } = await startServer({
       handlers: {

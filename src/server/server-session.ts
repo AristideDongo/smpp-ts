@@ -45,6 +45,8 @@ export class ServerSession<Ctx = unknown> {
   mode: BindMode | undefined;
   /** Context returned by `authenticate`. */
   context: Ctx | undefined;
+  /** `interface_version` announced by the peer in its bind (0x34 for v3.4, 0x50 for v5.0). */
+  interfaceVersion: number | undefined;
 
   constructor(
     readonly session: Session,

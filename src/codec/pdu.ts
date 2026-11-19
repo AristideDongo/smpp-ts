@@ -150,7 +150,31 @@ export class PduCodec {
     }
 
     const params = input as unknown as AnyRecord;
-    const w = new Writer();
+    // One scratch writer reused across calls: `toBuffer()` copies out, so nothing escapes it.
+    // Encoding is synchronous and does not call back into `encode`, but the flag keeps that honest.
+    const reuse = !scratchBusy;
+    let w: Writer;
+    if (reuse) {
+      scratchBusy = true;
+      scratch.reset();
+      w = scratch;
+    } else {
+      w = new Writer();
+    }
+    try {
+      return this.encodeInto(w, def, input, params, seq);
+    } finally {
+      if (reuse) scratchBusy = false;
+    }
+  }
+
+  private encodeInto(
+    w: Writer,
+    def: { id: number; params: readonly FieldDefinition[] },
+    input: PduInput,
+    params: AnyRecord,
+    seq: number,
+  ): Buffer {
     w.reserve(4); // command_length
     w.uint32('command_id', def.id);
     w.uint32('command_status', input.command_status ?? 0);
@@ -655,6 +679,10 @@ function decodeTlvValue(name: string, def: TlvDefinition, raw: Buffer, strict: b
 // ---------------------------------------------------------------------------
 // Default instance
 // ---------------------------------------------------------------------------
+
+/** Scratch writer shared by every `encode` call (see `PduCodec.encode`). */
+const scratch = new Writer(512);
+let scratchBusy = false;
 
 export const defaultCodec: PduCodec = new PduCodec();
 

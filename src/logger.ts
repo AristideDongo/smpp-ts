@@ -1,18 +1,32 @@
 import { COMMANDS } from './protocol/commands.js';
 import { TLVS } from './protocol/tlv.js';
 
+/** Level of a log entry. */
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
 /** Injectable logger interface, compatible with pino and console. */
 export interface Logger {
   debug(msg: string, meta?: Record<string, unknown>): void;
   info(msg: string, meta?: Record<string, unknown>): void;
   warn(msg: string, meta?: Record<string, unknown>): void;
   error(msg: string, meta?: Record<string, unknown>): void;
+  /**
+   * Optional (pino has it): asked before building a log entry that costs something.
+   * Without it, PDU logging is on as soon as a logger is set — `logPdus: false` turns it off.
+   */
+  isLevelEnabled?(level: LogLevel): boolean;
 }
 
 const noop = () => {};
 
 /** Silent logger (default). */
-export const silentLogger: Logger = { debug: noop, info: noop, warn: noop, error: noop };
+export const silentLogger: Logger = {
+  debug: noop,
+  info: noop,
+  warn: noop,
+  error: noop,
+  isLevelEnabled: () => false,
+};
 
 /**
  * Adapts a pino-style logger (`logger.info(meta, msg)`) or console (`console.info(msg, meta)`).
@@ -23,13 +37,19 @@ export function pinoAdapter(pino: {
   info(obj: object, msg: string): void;
   warn(obj: object, msg: string): void;
   error(obj: object, msg: string): void;
+  isLevelEnabled?(level: string): boolean;
 }): Logger {
-  return {
+  const adapter: Logger = {
     debug: (msg, meta) => pino.debug(meta ?? {}, msg),
     info: (msg, meta) => pino.info(meta ?? {}, msg),
     warn: (msg, meta) => pino.warn(meta ?? {}, msg),
     error: (msg, meta) => pino.error(meta ?? {}, msg),
   };
+  // Forwarded when pino has it: PDU logging then costs nothing below the debug level.
+  if (typeof pino.isLevelEnabled === 'function') {
+    adapter.isLevelEnabled = (level) => pino.isLevelEnabled!(level);
+  }
+  return adapter;
 }
 
 export interface RedactOptions {

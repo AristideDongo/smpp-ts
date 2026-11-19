@@ -1,6 +1,7 @@
 import type { Pdu } from '../codec/pdu.js';
 import { SmppAbortError, SmppQueueFullError, SmppTimeoutError } from '../errors.js';
 import type { CommandName } from '../protocol/commands.js';
+import { type ScheduledTimeout, type TimeoutScheduler, defaultTimeoutScheduler } from './timers.js';
 
 export type RequestPhase = 'queued' | 'inflight' | 'done';
 
@@ -16,6 +17,8 @@ export interface PendingRequest {
   writtenAt?: number;
   /** Control request (bind, unbind, enquire_link): outside the window and the queue. */
   readonly control: boolean;
+  /** Creation time (epoch ms): with `writtenAt`, how long the request waited in the queue. */
+  readonly createdAt: number;
   /** Queue priority, 0 (lowest, default) to 3: higher priorities leave the queue first. */
   readonly priority: number;
   readonly timeoutMs: number;
@@ -41,6 +44,8 @@ export interface CreateRequestOptions {
   signal?: AbortSignal | undefined;
   /** Called after an abort (e.g. to refill the window). */
   onAbort?: (req: PendingRequest) => void;
+  /** Deadline source. Default: the scheduler shared by the process. */
+  scheduler?: TimeoutScheduler;
 }
 
 /**
@@ -57,7 +62,8 @@ export function createPendingRequest(opts: CreateRequestOptions): {
     resolveFn = res;
     rejectFn = rej;
   });
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  const scheduler = opts.scheduler ?? defaultTimeoutScheduler;
+  let timer: ScheduledTimeout | undefined;
   const signal = opts.signal;
   const onAbort = () => {
     if (request.phase === 'done') return;
@@ -71,6 +77,7 @@ export function createPendingRequest(opts: CreateRequestOptions): {
     phase: 'queued',
     written: false,
     control: opts.control ?? false,
+    createdAt: Date.now(),
     priority: clampPriority(opts.priority),
     timeoutMs: opts.timeoutMs,
     deadline:
@@ -92,7 +99,7 @@ export function createPendingRequest(opts: CreateRequestOptions): {
       rejectFn(err);
     },
     clear() {
-      if (timer) clearTimeout(timer);
+      scheduler.cancel(timer);
       timer = undefined;
       signal?.removeEventListener('abort', onAbort);
     },
@@ -107,7 +114,8 @@ export function createPendingRequest(opts: CreateRequestOptions): {
   signal?.addEventListener('abort', onAbort, { once: true });
 
   if (opts.timeoutMs > 0 && Number.isFinite(opts.timeoutMs)) {
-    timer = setTimeout(() => expireRequest(request, opts.onTimeout), opts.timeoutMs);
+    // One shared timer for every deadline, instead of one timer per request.
+    timer = scheduler.schedule(request.deadline, () => expireRequest(request, opts.onTimeout));
   }
   return { request, promise };
 }

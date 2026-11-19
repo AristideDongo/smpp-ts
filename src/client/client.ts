@@ -51,7 +51,7 @@ import {
 } from '../utils/delivery-tracker.js';
 import type { DeliveryReport, MessageIdFormat } from '../utils/dlr.js';
 import { type TextEstimate, estimateText, prepareText } from '../utils/estimate.js';
-import { buildParts } from '../utils/multipart.js';
+import { buildBinaryParts, buildParts } from '../utils/multipart.js';
 import type { MultipartStrategy } from '../utils/segments.js';
 import { formatAbsoluteTime, formatRelativeTime } from '../utils/time.js';
 import { type InboundMessage, InboundProcessor, wantsFinalReceipt } from './inbound.js';
@@ -128,6 +128,14 @@ export interface SmppClientOptions {
   unbindTimeout?: number;
 
   logger?: Logger;
+  /**
+   * Logs every PDU at the `debug` level. Default: what `logger.isLevelEnabled('debug')` says, or
+   * `true` for a logger without it. Logging a PDU costs a decode and a deep copy: on a hot path
+   * whose logger has no level check, set it to `false`.
+   */
+  logPdus?: boolean;
+  /** Minimum delay between two emissions of the same gauge metric. Default: 50 ms. */
+  gaugeInterval?: number;
   /** Masks SMS content in logs. */
   redactContent?: boolean;
   /** Partially masks phone numbers in logs. */
@@ -246,6 +254,51 @@ export interface SendTextResult {
   encoding: string;
   /** Characters replaced by GSM7 normalization (0 when the text was sent as it is). */
   replacements: number;
+}
+
+/** Addressing and submit options shared by `sendText` and `sendBinary`. */
+interface SendCommonOptions {
+  to: string;
+  from: string;
+  strategy?: MultipartStrategy;
+  /** `true` = receipt for the final outcome; or a registered_delivery value. */
+  registeredDelivery?: boolean | number;
+  validityPeriod?: Date | number | string;
+  scheduleDeliveryTime?: Date | number | string;
+  serviceType?: string;
+  sourceTon?: number;
+  sourceNpi?: number;
+  destTon?: number;
+  destNpi?: number;
+  priority?: number;
+  timeout?: number;
+  signal?: AbortSignal;
+  /** Application reference echoed in the `messageStatus` event (with `trackDeliveries`). */
+  reference?: string;
+}
+
+export interface SendBinaryOptions extends SendCommonOptions {
+  /** Content to send as it is: WAP push, vCard, OTA configuration, any binary payload. */
+  data: Uint8Array;
+  /** `data_coding`. Default: 0x04 (8-bit binary). */
+  dataCoding?: number;
+  /** Destination application port (WAP push: 2948). Adds the port-addressing UDH. */
+  destPort?: number;
+  /** Source application port. */
+  sourcePort?: number;
+  /** Port width. Default: 8 when both ports fit in a byte, 16 otherwise. */
+  portBits?: 8 | 16;
+  /** Extra submit_sm parameters (TLVs…). */
+  params?: PduParams<'submit_sm'>;
+  /** Maximum number of segments. Default: 255. */
+  maxSegments?: number;
+}
+
+export interface SendBinaryResult {
+  messageIds: string[];
+  parts: number;
+  /** Content octets sent, UDH excluded. */
+  bytes: number;
 }
 
 /** A `sendTextMulti` destination: a number, or a distribution list defined on the SMSC. */
@@ -412,6 +465,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
           logger: this.logger,
           packedGsm7: options.packedGsm7 ?? false,
           messageIdFormat: options.messageIdFormat ?? 'as-is',
+          onMetric: (m) => this.emit('metric', m),
           ...(options.reassembly ? { reassembly: options.reassembly } : {}),
           ...(options.dedup === false
             ? {}
@@ -539,6 +593,8 @@ export class SmppClient extends EventEmitter<ClientEvents> {
         'maxWriteBuffer',
         'sequenceGenerator',
         'congestionThreshold',
+        'logPdus',
+        'gaugeInterval',
       ]),
       logContext: { systemId: this.bindOptions.system_id, host: this.endpoint.host },
     });
@@ -695,14 +751,8 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     this.sleeper?.cancel();
     const session = this.session;
     if (options.drain && session) {
-      const deadline = Date.now() + (options.timeout ?? this.options.requestTimeout ?? 10_000);
-      while (
-        (this.queue.size > 0 || session.inflightCount > 0) &&
-        Date.now() < deadline &&
-        !session.isClosed
-      ) {
-        await new Promise((r) => setTimeout(r, 20));
-      }
+      // Resolves as soon as the queue and the window are empty: no polling, no fixed delay.
+      await session.drain(options.timeout ?? this.options.requestTimeout ?? 10_000, true);
     }
     this.queue.rejectAll(() => new SmppConnectionClosedError(false, 'Client closing'));
     if (session && !session.isClosed) {
@@ -842,21 +892,85 @@ export class SmppClient extends EventEmitter<ClientEvents> {
       ...opts.params,
     };
 
+    const messageIds = await this.submitParts(base, built.parts, opts);
+    return {
+      messageIds,
+      parts: built.parts.length,
+      encoding: built.encoding.toUpperCase(),
+      replacements: prepared.replacements.length,
+    };
+  }
+
+  /**
+   * Sends binary content: WAP push, a vCard, an OTA configuration. Concatenation and application
+   * ports go in the UDH, so nothing has to be built by hand; the content is sent as it is, with no
+   * encoding step.
+   */
+  async sendBinary(opts: SendBinaryOptions): Promise<SendBinaryResult> {
+    const addressing = this.options.address ?? {};
+    const source = resolveAddress(opts.from, 'source', {
+      ...addressing,
+      ton: opts.sourceTon,
+      npi: opts.sourceNpi,
+    });
+    const dest = resolveAddress(opts.to, 'destination', {
+      ...addressing,
+      ton: opts.destTon,
+      npi: opts.destNpi,
+    });
+    const built = buildBinaryParts(opts.data, {
+      reference: this.nextConcatRef(),
+      strategy: opts.strategy ?? this.options.multipart?.strategy ?? 'udh8',
+      ...(opts.dataCoding !== undefined ? { dataCoding: opts.dataCoding } : {}),
+      ...(opts.sourcePort !== undefined ? { sourcePort: opts.sourcePort } : {}),
+      ...(opts.destPort !== undefined ? { destPort: opts.destPort } : {}),
+      ...(opts.portBits !== undefined ? { portBits: opts.portBits } : {}),
+      ...(opts.params?.esm_class !== undefined ? { esmClass: opts.params.esm_class } : {}),
+    });
+    const maxSegments = opts.maxSegments ?? this.options.multipart?.maxSegments ?? 255;
+    if (built.parts.length > maxSegments) {
+      throw new SmppValidationError(
+        `Content needs ${built.parts.length} segments, over maxSegments (${maxSegments})`,
+        'data',
+        COMMAND_STATUS.ESME_RINVMSGLEN,
+      );
+    }
+    const base: PduParams<'submit_sm'> = {
+      service_type: opts.serviceType ?? '',
+      source_addr_ton: source.ton,
+      source_addr_npi: source.npi,
+      source_addr: source.addr,
+      dest_addr_ton: dest.ton,
+      dest_addr_npi: dest.npi,
+      destination_addr: dest.addr,
+      registered_delivery: resolveRegisteredDelivery(opts.registeredDelivery),
+      priority_flag: opts.priority ?? 0,
+      validity_period: toSmppTime(opts.validityPeriod),
+      schedule_delivery_time: toSmppTime(opts.scheduleDeliveryTime),
+      ...opts.params,
+    };
+    const messageIds = await this.submitParts(base, built.parts, opts);
+    return { messageIds, parts: built.parts.length, bytes: opts.data.length };
+  }
+
+  /**
+   * Submits every segment of one message and collects the `message_id`s.
+   * A partial failure throws `SmppMultipartError`, which says what each segment did.
+   */
+  private async submitParts(
+    base: PduParams<'submit_sm'>,
+    parts: ReadonlyArray<PduParams<'submit_sm'>>,
+    opts: Pick<SendCommonOptions, 'timeout' | 'signal' | 'priority' | 'reference'>,
+  ): Promise<string[]> {
+    const requestOptions: RequestOptions = {
+      ...(opts.timeout !== undefined ? { timeout: opts.timeout } : {}),
+      ...(opts.signal ? { signal: opts.signal } : {}),
+      ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
+    };
     const results = await Promise.allSettled(
-      built.parts.map((part) =>
-        this.request(
-          'submit_sm',
-          { ...base, ...part },
-          {
-            ...(opts.timeout !== undefined ? { timeout: opts.timeout } : {}),
-            ...(opts.signal ? { signal: opts.signal } : {}),
-            ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
-          },
-        ),
-      ),
+      parts.map((part) => this.request('submit_sm', { ...base, ...part }, requestOptions)),
     );
-    const failed = results.some((r) => r.status === 'rejected');
-    if (failed) {
+    if (results.some((r) => r.status === 'rejected')) {
       if (results.length === 1 && results[0]?.status === 'rejected') throw results[0].reason;
       throw new SmppMultipartError(
         results.map((r) =>
@@ -870,14 +984,10 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     // Track only when a final receipt is requested whatever the outcome (bits 0-1 = 01):
     // with "failure only" or "success only", a missing receipt proves nothing.
     const tracker = this.inbound.tracker;
-    if (tracker && wantsFinalReceipt(base.registered_delivery ?? 0))
+    if (tracker && wantsFinalReceipt(base.registered_delivery ?? 0)) {
       tracker.track(messageIds, opts.reference);
-    return {
-      messageIds,
-      parts: built.parts.length,
-      encoding: built.encoding.toUpperCase(),
-      replacements: prepared.replacements.length,
-    };
+    }
+    return messageIds;
   }
 
   /**
@@ -994,13 +1104,7 @@ export class SmppClient extends EventEmitter<ClientEvents> {
       const dataCoding = flashDataCoding(built.dataCoding);
       for (const part of built.parts) part.data_coding = dataCoding;
     }
-    const registered: number =
-      opts.registeredDelivery === true
-        ? REGISTERED_DELIVERY.FINAL
-        : opts.registeredDelivery === false || opts.registeredDelivery === undefined
-          ? REGISTERED_DELIVERY.NONE
-          : opts.registeredDelivery;
-    return { built, prepared, registered };
+    return { built, prepared, registered: resolveRegisteredDelivery(opts.registeredDelivery) };
   }
 
   private segmentOptions(opts: EstimateOptions) {
@@ -1152,6 +1256,13 @@ export class SmppClient extends EventEmitter<ClientEvents> {
     if (this.listenerCount('error') > 0) this.emitSafe('error', err);
     else this.logger.error(err.message, { code: err.code });
   }
+}
+
+/** `registeredDelivery: true` means "the final outcome, whatever it is". */
+function resolveRegisteredDelivery(value: boolean | number | undefined): number {
+  if (value === true) return REGISTERED_DELIVERY.FINAL;
+  if (value === false || value === undefined) return REGISTERED_DELIVERY.NONE;
+  return value;
 }
 
 function resolveEndpoint(o: SmppClientOptions): Endpoint {

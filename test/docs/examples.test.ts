@@ -47,6 +47,7 @@ declare global {
   const key: string;
   const cert: string;
   const clientCa: string;
+  const wapPushBuffer: Buffer;
   const KNOWN_FINGERPRINT: string;
   const readFileSync: typeof import('node:fs').readFileSync;
   const expect: typeof vitest.expect;

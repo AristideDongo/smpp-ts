@@ -12,8 +12,8 @@ import {
   SmppValidationError,
   toError,
 } from '../errors.js';
-import { type Logger, type RedactOptions, redactPdu, silentLogger } from '../logger.js';
-import type { Metric } from '../metrics.js';
+import { type LogLevel, type Logger, type RedactOptions, redactPdu, silentLogger } from '../logger.js';
+import { GaugeSampler, type Metric } from '../metrics.js';
 import {
   type CommandName,
   type RequestCommandName,
@@ -88,6 +88,21 @@ export interface SessionOptions extends SessionTimeouts {
    */
   congestionThreshold?: number;
   /**
+   * Logs every PDU sent and received at the `debug` level, with its fields (secrets masked).
+   * Default: whatever `logger.isLevelEnabled('debug')` says, or `true` for a logger without it.
+   *
+   * It is not free: an outgoing PDU has to be decoded back from its bytes and every PDU is deep
+   * copied for redaction. Set it to `false` on a hot path whose logger has no level check.
+   */
+  logPdus?: boolean;
+  /** Extra parameters merged into every response (e.g. the `congestion_state` TLV). */
+  responseExtras?: () => Record<string, unknown> | undefined;
+  /**
+   * Minimum delay between two emissions of the same gauge (`queue.size`, `request.inflight`).
+   * Default: 50 ms. 0 emits every change. A value of 0 for the gauge itself always goes through.
+   */
+  gaugeInterval?: number;
+  /**
    * Bytes waiting in the socket write buffer beyond which the session is closed:
    * a peer that sends requests without reading the responses cannot grow memory without limit.
    * Default: 1 MiB. 0 = no limit (reading is still paused while the buffer is full).
@@ -155,6 +170,11 @@ export class Session extends EventEmitter<SessionEvents> {
   context: unknown;
   /** Peer system_id, once bound. */
   systemId: string | undefined;
+  /**
+   * Extra parameters merged into every response sent by `respond()` (the server uses it for the
+   * SMPP 5.0 `congestion_state` TLV). Returning `undefined` adds nothing.
+   */
+  responseExtras: (() => Record<string, unknown> | undefined) | undefined;
 
   private readonly ownsQueue: boolean;
   private readonly machine: StateMachine;
@@ -167,6 +187,8 @@ export class Session extends EventEmitter<SessionEvents> {
   private readonly rateLimiter: TokenBucket | undefined;
   private readonly timeouts: Required<SessionTimeouts>;
   private readonly logContext: Record<string, unknown>;
+  private readonly logPdus: boolean | undefined;
+  private readonly gauges: GaugeSampler;
   private readonly maxWriteBuffer: number;
   private readonly congestionThreshold: number;
   private lastCongestionPenalty = 0;
@@ -186,6 +208,7 @@ export class Session extends EventEmitter<SessionEvents> {
   private keepaliveTimer: ReturnType<typeof setTimeout> | undefined;
   private rateTimer: ReturnType<typeof setTimeout> | undefined;
   private enquirePending = false;
+  private readonly drainWaiters = new Set<{ resolve: () => void; includeQueue: boolean }>();
   private closeError: Error | undefined;
   private closed = false;
   private readonly closedPromise: Promise<void>;
@@ -218,6 +241,9 @@ export class Session extends EventEmitter<SessionEvents> {
       remoteAddress: socket.remoteAddress,
       ...options.logContext,
     };
+    this.logPdus = options.logPdus;
+    this.responseExtras = options.responseExtras;
+    this.gauges = new GaugeSampler(options.gaugeInterval ?? 50);
     this.maxWriteBuffer = options.maxWriteBuffer ?? 1024 * 1024;
     this.congestionThreshold = options.congestionThreshold ?? 90;
     this.sequenceGenerator = options.sequenceGenerator;
@@ -286,9 +312,43 @@ export class Session extends EventEmitter<SessionEvents> {
    */
   async holdAndDrain(timeoutMs: number): Promise<void> {
     this.held = true;
-    const deadline = Date.now() + timeoutMs;
-    while (this.windowUsed > 0 && !this.closed && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 10));
+    await this.drain(timeoutMs);
+  }
+
+  /**
+   * Resolves once no request is in flight (and, with `includeQueue`, the queue is empty too),
+   * when the session closes, or after `timeoutMs`. Event-driven: nothing polls.
+   */
+  drain(timeoutMs: number, includeQueue = false): Promise<void> {
+    if (this.closed || this.isDrained(includeQueue)) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const waiter = { resolve, includeQueue };
+      this.drainWaiters.add(waiter);
+      if (timeoutMs > 0 && Number.isFinite(timeoutMs)) {
+        const timer = setTimeout(() => {
+          if (this.drainWaiters.delete(waiter)) resolve();
+        }, timeoutMs);
+        timer.unref?.();
+        waiter.resolve = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+      }
+    });
+  }
+
+  private isDrained(includeQueue: boolean): boolean {
+    return this.windowUsed === 0 && (!includeQueue || this.queue.size === 0);
+  }
+
+  /** Wakes up whoever waits on `drain()`. Called whenever the window or the queue shrinks. */
+  private checkDrain(): void {
+    if (this.drainWaiters.size === 0) return;
+    for (const waiter of [...this.drainWaiters]) {
+      if (this.closed || this.isDrained(waiter.includeQueue)) {
+        this.drainWaiters.delete(waiter);
+        waiter.resolve();
+      }
     }
   }
 
@@ -335,7 +395,7 @@ export class Session extends EventEmitter<SessionEvents> {
         onAbort: () => this.dispatch(),
       });
       this.queue.push(request);
-      this.emitMetric({ name: 'queue.size', type: 'gauge', value: this.queue.size });
+      this.emitGauge('queue.size', this.queue.size);
       this.dispatch();
       return promise as Promise<ResponseOf<C>>;
     } catch (err) {
@@ -367,23 +427,25 @@ export class Session extends EventEmitter<SessionEvents> {
     const { command_status = 0, ...rest } = params;
     // An error response may omit the body (and must, for some SMSCs).
     const body = command_status !== 0 ? {} : rest;
-    const buf = this.codec.encode({
+    const pdu = {
       command: respName,
       command_status,
       sequence_number: request.sequence_number,
       ...body,
-    } as never);
-    this.write(buf, respName, command_status);
+      ...this.responseExtras?.(),
+    };
+    const buf = this.codec.encode(pdu as never);
+    this.write(buf, respName, command_status, pdu);
   }
 
   nack(sequenceNumber: number, status: number): void {
     if (this.closed) return;
-    const buf = this.codec.encode({
-      command: 'generic_nack',
+    const pdu = {
+      command: 'generic_nack' as const,
       command_status: status,
       sequence_number: sequenceNumber,
-    });
-    this.write(buf, 'generic_nack', status);
+    };
+    this.write(this.codec.encode(pdu), 'generic_nack', status, pdu);
   }
 
   // ---------------------------------------------------------------- bind / unbind / close
@@ -538,12 +600,22 @@ export class Session extends EventEmitter<SessionEvents> {
       if (this.inflight.get(seq) === req) {
         this.inflight.delete(seq);
         if (!req.control) this.windowUsed--;
+        this.checkDrain();
       }
     };
     req.writtenAt = Date.now();
     // `written` reports what really happened: a request the socket never took can be resent safely.
     req.written = this.write(req.encoded, req.command);
-    if (!req.control) this.emitMetric({ name: 'request.inflight', type: 'gauge', value: this.windowUsed });
+    if (!req.control) {
+      this.emitGauge('request.inflight', this.windowUsed);
+      // How long the request waited for a window slot: the first thing to watch under load.
+      this.emitMetric({
+        name: 'request.queueWait',
+        type: 'histogram',
+        value: Math.max(0, (req.writtenAt ?? Date.now()) - req.createdAt),
+        labels: { command: req.command },
+      });
+    }
   }
 
   /** Fills the window from the queue, honouring state, backpressure and rate limit. */
@@ -556,7 +628,8 @@ export class Session extends EventEmitter<SessionEvents> {
     } finally {
       this.uncork();
     }
-    this.emitMetric({ name: 'queue.size', type: 'gauge', value: this.queue.size });
+    this.emitGauge('queue.size', this.queue.size);
+    this.checkDrain();
   }
 
   /** Nested cork / uncork: the socket is uncorked by the outermost call only. */
@@ -612,9 +685,10 @@ export class Session extends EventEmitter<SessionEvents> {
   }
 
   /** Writes a PDU. Returns `false` when the socket could not take it (closed or destroyed). */
-  private write(buf: Buffer, command: CommandName, status = 0): boolean {
+  private write(buf: Buffer, command: CommandName, status = 0, pdu?: object): boolean {
     if (this.closed || this.socket.destroyed) return false;
-    this.logPdu('sent', buf);
+    // The decoded PDU when the caller has it: logging then costs no second decode.
+    if (this.pduLogEnabled) this.logPdu('sent', pdu ?? buf);
     const ok = this.socket.write(buf);
     if (!ok && !this.writeBlocked) {
       // Backpressure (REL-09): stop reading until the peer reads what we wrote, otherwise a peer
@@ -682,7 +756,7 @@ export class Session extends EventEmitter<SessionEvents> {
       this.onDecodeError(err);
       return;
     }
-    this.logPdu('received', pdu);
+    if (this.pduLogEnabled) this.logPdu('received', pdu);
     this.emitMetric({ name: 'pdu.received', type: 'counter', value: 1, labels: { command: pdu.command } });
     try {
       if (isResponseCommand(pdu.command)) this.handleResponse(pdu);
@@ -849,9 +923,12 @@ export class Session extends EventEmitter<SessionEvents> {
     if (enquireLinkInterval > 0 && idle >= enquireLinkInterval && !this.enquirePending) {
       this.enquirePending = true;
       const encoded = this.encode('enquire_link', {}, 0);
+      const sentAt = Date.now();
       this.sendControl('enquire_link', encoded, enquireLinkTimeout)
         .then(() => {
           this.enquirePending = false;
+          // The peer's response time with no traffic in the way: the cleanest latency signal.
+          this.emitMetric({ name: 'session.rtt', type: 'histogram', value: Date.now() - sentAt });
         })
         .catch((err: unknown) => {
           this.enquirePending = false;
@@ -906,6 +983,7 @@ export class Session extends EventEmitter<SessionEvents> {
       );
     }
     this.pendingFrames = [];
+    this.checkDrain();
     if (this.machine.state !== 'CLOSED') this.machine.transition('CLOSED');
     this.log('info', 'session closed', cause ? { error: cause.message } : undefined);
     this.emit('close', cause);
@@ -924,7 +1002,24 @@ export class Session extends EventEmitter<SessionEvents> {
     if (this.listenerCount('metric') > 0) this.emit('metric', metric);
   }
 
-  log(level: keyof Logger, msg: string, meta?: Record<string, unknown>): void {
+  /** Emits a gauge at most every `gaugeInterval` ms; a value of 0 always goes through. */
+  private emitGauge(name: 'queue.size' | 'request.inflight', value: number): void {
+    if (this.listenerCount('metric') === 0) return;
+    if (!this.gauges.shouldEmit(name, value)) return;
+    this.emit('metric', { name, type: 'gauge', value });
+  }
+
+  /**
+   * Whether PDUs are logged. A logger without `isLevelEnabled` is assumed to want them, as before;
+   * `logPdus: false` is the way out of the decode-and-redact cost on a hot path.
+   */
+  private get pduLogEnabled(): boolean {
+    if (this.logPdus !== undefined) return this.logPdus;
+    if (this.logger === silentLogger) return false;
+    return this.logger.isLevelEnabled?.('debug') ?? true;
+  }
+
+  log(level: LogLevel, msg: string, meta?: Record<string, unknown>): void {
     try {
       this.logger[level](msg, { ...this.logContext, ...meta });
     } catch {
@@ -932,8 +1027,7 @@ export class Session extends EventEmitter<SessionEvents> {
     }
   }
 
-  private logPdu(direction: 'sent' | 'received', pdu: Pdu | Buffer): void {
-    if (this.logger === silentLogger) return;
+  private logPdu(direction: 'sent' | 'received', pdu: Pdu | Buffer | object): void {
     let obj: Pdu | undefined;
     if (Buffer.isBuffer(pdu)) {
       try {
@@ -942,7 +1036,7 @@ export class Session extends EventEmitter<SessionEvents> {
         return;
       }
     } else {
-      obj = pdu;
+      obj = pdu as Pdu;
     }
     this.log('debug', `pdu ${direction}`, {
       command: obj.command,
