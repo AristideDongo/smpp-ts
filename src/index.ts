@@ -1,7 +1,13 @@
 // Client / server
 export { SmppClient } from './client/client.js';
 export { SmppPool } from './client/pool.js';
-export type { PoolEvents, PoolHealth, PoolStrategy, SmppPoolOptions } from './client/pool.js';
+export type {
+  PoolEvents,
+  PoolHealth,
+  PoolMemberOptions,
+  PoolStrategy,
+  SmppPoolOptions,
+} from './client/pool.js';
 export { OutbindServer } from './client/outbind.js';
 export type {
   OutbindInfo,
@@ -21,6 +27,8 @@ export type {
   RawApi,
   MultiDestination,
   RefusedDestination,
+  SendBinaryOptions,
+  SendBinaryResult,
   SendTextMultiOptions,
   SendTextMultiResult,
   SendTextOptions,
@@ -62,6 +70,8 @@ export type {
 } from './session/session.js';
 export { canSend, isBound } from './session/state-machine.js';
 export type { BindMode, SessionRole, SessionState } from './session/state-machine.js';
+export { TimeoutScheduler, defaultTimeoutScheduler } from './session/timers.js';
+export type { ScheduledTimeout } from './session/timers.js';
 export { TokenBucket } from './session/rate-limiter.js';
 export type { RateLimitOptions } from './session/rate-limiter.js';
 export { PRIORITY_LEVELS, RequestQueue } from './session/window.js';
@@ -162,6 +172,7 @@ export { MemoryDedupStore } from './utils/dedup.js';
 export type { DedupOptions, DedupStore, DuplicateKind } from './utils/dedup.js';
 export {
   Reassembler,
+  buildBinaryParts,
   buildParts,
   buildUdh,
   decodeMessageContent,
@@ -169,10 +180,13 @@ export {
   parseUdh,
 } from './utils/multipart.js';
 export type {
+  BuildBinaryPartsOptions,
+  BuiltBinaryParts,
   ConcatInfo,
   InformationElement,
   OutboundPart,
   ParsedUdh,
+  PortInfo,
   ReassembledMessage,
 } from './utils/multipart.js';
 export {
@@ -218,7 +232,8 @@ export {
 } from './errors.js';
 export type { TimeoutKind } from './errors.js';
 export { REDACTED, maskNumber, pinoAdapter, redactPdu, silentLogger } from './logger.js';
-export type { Logger, RedactOptions } from './logger.js';
+export type { LogLevel, Logger, RedactOptions } from './logger.js';
+export { GaugeSampler } from './metrics.js';
 export type { Metric, MetricName } from './metrics.js';
 
 // Types that appear in public signatures

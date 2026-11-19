@@ -9,6 +9,7 @@ import type { Metric } from '../metrics.js';
 import type { RequestCommandName, ResponseCommandName } from '../protocol/commands.js';
 import { responseNameOf } from '../protocol/commands.js';
 import { COMMAND_STATUS } from '../protocol/status.js';
+import { type RateLimitOptions, TokenBucket } from '../session/rate-limiter.js';
 import { type RequestOptions, type ResponseOf, Session } from '../session/session.js';
 import { type BindMode, bindModeOf } from '../session/state-machine.js';
 import {
@@ -153,6 +154,22 @@ export interface SmppServerOptions<Ctx = unknown> {
    * their own limit still add up (1 000 × 1 MiB).
    */
   maxTotalWriteBuffer?: number;
+  /**
+   * Requests accepted per second and per session, on top of `inboundWindow` (which bounds
+   * concurrency, not rate). Beyond it a request is answered at once with `ESME_RTHROTTLED`.
+   * Off by default — an operator selling a throughput tier sets it here.
+   */
+  inboundRate?: RateLimitOptions;
+  /**
+   * Adds the SMPP 5.0 `congestion_state` TLV (0-100) to the responses of peers that announced
+   * `interface_version` 0x50, derived from how full the inbound window and the session slots are.
+   * A client that honours it slows down before anything has to be rejected. Default: true.
+   */
+  congestionReporting?: boolean;
+  /** Logs every PDU at the `debug` level. Default: what the logger's level says. */
+  logPdus?: boolean;
+  /** Minimum delay between two emissions of the same gauge metric. Default: 50 ms. */
+  gaugeInterval?: number;
   /**
    * Rate of accepted connections, per address and in total (SEC-05).
    * Default: 20 per second per address, burst of 40; no total limit. `false` disables it.
@@ -415,6 +432,10 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
 
   private startSession(stream: Duplex, raw: net.Socket, ip: string, tlsInfo?: TlsPeerInfo): void {
     const o = this.options;
+    // Inbound window: bounds the handlers running at the same time for this session.
+    const inboundWindow = Math.max(1, o.inboundWindow ?? 10);
+    const inboundBucket = o.inboundRate ? new TokenBucket(o.inboundRate) : undefined;
+    let active = 0;
     const session = new Session(stream as Duplex & { remoteAddress?: string }, {
       role: 'smsc',
       codec: this.codec,
@@ -428,9 +449,13 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
       unbindTimeout: o.unbindTimeout ?? 5_000,
       idleTimeout: o.idleTimeout ?? 5 * 60_000,
       ...(o.maxWriteBuffer !== undefined ? { maxWriteBuffer: o.maxWriteBuffer } : {}),
+      ...(o.logPdus !== undefined ? { logPdus: o.logPdus } : {}),
+      ...(o.gaugeInterval !== undefined ? { gaugeInterval: o.gaugeInterval } : {}),
       logContext: { remoteAddress: ip },
     });
     const ss = new ServerSession<Ctx>(session, ip, tlsInfo);
+    // Tells a v5.0 peer how loaded we are, in every response it gets.
+    session.responseExtras = () => this.congestionExtras(ss, active, inboundWindow);
     this.sessions.add(ss);
     this.startWriteBudgetWatch();
     // One close listener aborts every in-flight handler, whatever inboundWindow is (#31).
@@ -451,14 +476,18 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     }, o.bindTimeout ?? 30_000);
     bindTimer.unref?.();
 
-    // Inbound window: bounds the handlers running at the same time for this session.
-    const inboundWindow = Math.max(1, o.inboundWindow ?? 10);
     const throttle = o.inboundWindowPolicy === 'throttle';
-    let active = 0;
     let windowPaused = false;
     session.on('pdu', (pdu) => {
       if (bindModeOf(pdu.command) || !responseNameOf(pdu.command)) {
         void this.onPdu(ss, pdu);
+        return;
+      }
+      // Rate limit, on top of the concurrency limit below.
+      if (inboundBucket && inboundBucket.take() > 0) {
+        session.respond(pdu as { command: RequestCommandName; sequence_number: number }, {
+          command_status: COMMAND_STATUS.ESME_RTHROTTLED,
+        });
         return;
       }
       if (active >= inboundWindow) {
@@ -649,6 +678,7 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
 
     this.failures.recordSuccess(ip);
     ss.mode = mode;
+    ss.interfaceVersion = pdu.interface_version;
     ss.context = accepted === true ? undefined : (accepted as Ctx);
     session.context = ss.context;
     const respParams: PduParams<'bind_transceiver_resp'> = { system_id: this.options.systemId ?? 'smpp-ts' };
@@ -659,6 +689,24 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     session.resume();
     this.logger.info('session bound', { systemId: pdu.system_id, remoteAddress: ip, mode });
     this.emitSafe('bind', ss);
+  }
+
+  // ---------------------------------------------------------------- congestion
+
+  /**
+   * SMPP 5.0 `congestion_state` (0-100) for this session's responses: the fuller the inbound window
+   * and the session slots are, the higher. Only sent to a peer that announced v5.0 — a v3.4 peer
+   * does not expect the TLV.
+   */
+  private congestionExtras(
+    ss: ServerSession<Ctx>,
+    active: number,
+    inboundWindow: number,
+  ): Record<string, unknown> | undefined {
+    if (this.options.congestionReporting === false) return undefined;
+    if ((ss.interfaceVersion ?? 0) < 0x50) return undefined;
+    const load = Math.max(active / inboundWindow, this.connections / (this.options.maxSessions ?? 1000));
+    return { congestion_state: Math.max(0, Math.min(100, Math.round(load * 100))) };
   }
 
   // ---------------------------------------------------------------- write budget

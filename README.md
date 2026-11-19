@@ -60,6 +60,7 @@ await client.close({ drain: true });
 |---|---|
 | `sendText({ to, from, text, … })` | Picks the encoding, splits the text and returns every `message_id` |
 | `sendTextMulti({ to: [...], from, text, … })` | Same text to up to 254 numbers or distribution lists with `submit_multi`; refused destinations come back in `refused` |
+| `sendBinary({ to, from, data, … })` | Binary content (WAP push, vCard, OTA): splits it and builds the UDH, ports included |
 | `submit(params)` | Low-level `submit_sm` |
 | `query(id)`, `cancel(id)`, `replace(id, params)` | `query_sm`, `cancel_sm`, `replace_sm` |
 | `request(command, params)` | Any SMPP command |
@@ -304,6 +305,29 @@ Each segment is billed as one SMS. `multipart.maxSegments` (or `maxSegments` per
 
 `flash: true` sends a flash SMS (message class 0: shown at once, not stored by the handset). It works with GSM7, UCS2 and binary content; with Latin-1 or ASCII it is rejected before sending.
 
+### Binary content
+
+`sendBinary` sends bytes as they are: no encoding step, concatenation and application ports built into the UDH.
+
+```ts
+await client.sendBinary({
+  to: '2250700000000',
+  from: 'PUSH',
+  data: wapPushBuffer,     // Uint8Array or Buffer
+  destPort: 2948,          // WAP push; adds the port-addressing UDH (IE 0x04/0x05)
+  sourcePort: 9200,
+  dataCoding: 0x04,        // default: 8-bit binary
+  strategy: 'udh8',        // same strategies as a long text
+});
+// { messageIds: ['…'], parts: 2, bytes: 180 }
+```
+
+- The port width follows the ports: 8-bit while both fit in a byte, 16-bit otherwise (`portBits` forces it).
+- One segment holds 140 octets, minus the UDH: 133 with 16-bit ports alone, 128 with ports and concatenation.
+- `maxSegments` and `params` (TLVs) work as in `sendText`. `pool.sendBinary` sends every segment through the same bind.
+- Incoming binary messages carry their ports: `message` gives `msg.ports` (`{ source, destination, bits }`) and `msg.body`.
+- `buildBinaryParts(data, { reference, … })` builds the segments without sending them.
+
 ### Several binds (`SmppPool`)
 
 Operators often cap the throughput of each bind (for example 50 msg/s) and allow several binds per account. `SmppPool` opens them all behind the same API as `SmppClient`:
@@ -328,7 +352,8 @@ pool.on('messageStatus', (s) => console.log(s.outcome));
 |---|---|---|
 | `size` | 2 | Number of identical binds |
 | `members` | none | One entry per bind, merged over the shared options: another host for failover, another `system_id`… (`bind` is merged field by field). Replaces `size` |
-| `strategy` | `least-busy` | `least-busy`: the bind with the fewest requests in flight or queued. `round-robin`: each bind in turn |
+| `strategy` | `least-busy` | `least-busy`: the bind with the fewest requests in flight or queued. `round-robin`: each bind in turn. `failover`: always the first bind that is up, the next ones being standbys |
+| `members[].weight` | 1 | Share of the traffic of that bind, relative to the others (`least-busy` and `round-robin`). `0` makes it a standby, used only when no other bind can take the request |
 | `minBound` | 1 | Binds that must be up for `connect()` to resolve |
 
 - Every other option (window, timeouts, `rateLimit`, `retry`…) applies to **each** bind.
@@ -337,6 +362,20 @@ pool.on('messageStatus', (s) => console.log(s.outcome));
 - All the segments of a `sendText` go through the same bind, and concatenation references are shared by the pool: two binds never use the same reference at the same time.
 - Receipts and incoming messages are processed once for the whole pool. A receipt can arrive on another bind than its `submit_sm`, and the segments of a long incoming message can arrive on different binds: `messageStatus` and `message` still work.
 - `pool.members` gives access to each `SmppClient` (state, `raw` API).
+
+A main operator with a backup, and a second operator that takes a third of the traffic:
+
+```ts
+const pool = new SmppPool({
+  bind: { mode: 'transceiver', system_id: 'xxx', password: 'yyy' },
+  strategy: 'round-robin',
+  members: [
+    { url: 'ssmpp://smsc-a.example.com:3550', weight: 2 },
+    { url: 'ssmpp://smsc-b.example.com:3550', weight: 1 },
+    { url: 'ssmpp://backup.example.com:3550', weight: 0 }, // only when the others cannot take it
+  ],
+});
+```
 
 ### SMSC-initiated sessions (outbind)
 
@@ -418,6 +457,8 @@ await server.deliver('system_id', { source_addr: '…', destination_addr: '…',
 - `maxSessions` and `maxSessionsPerIp` count every connection from the moment it is accepted, including those still sending their PROXY header or doing their TLS handshake. `maxSessionsPerSystemId` counts binds still being authenticated, so concurrent binds cannot exceed it.
 - `bindFailures` bans by IP. Brute force on one `system_id` from many addresses must be handled in `authenticate()` (with a shared store when several instances run).
 - Inbound window: at most `inboundWindow` (10) requests per session wait for their handler at the same time. Beyond that, reading pauses until a handler answers (`inboundWindowPolicy: 'pause'`, default), or extra requests get `ESME_RTHROTTLED` at once (`'throttle'`).
+- `inboundRate` limits the requests accepted per second per session, on top of `inboundWindow` which bounds concurrency: `inboundRate: { perSecond: 50, burst: 10 }` answers `ESME_RTHROTTLED` at once beyond that rate. Off by default.
+- Responses to a peer that announced `interface_version` 0x50 carry the SMPP 5.0 `congestion_state` TLV (0-100), derived from how full the inbound window and the session slots are, so a client that honours it slows down before anything is rejected. A v3.4 peer never sees the TLV; `congestionReporting: false` removes it.
 - A peer that never reads its responses cannot grow memory: reading pauses while the write buffer is full, the session is closed beyond `maxWriteBuffer` (1 MiB), and the heaviest sessions are closed when every write buffer together passes `maxTotalWriteBuffer` (64 MiB).
 - Connections are rate-limited before a single byte is read (and before the TLS handshake): `connectionRate` defaults to 20 per second per address with a burst of 40, plus an optional total (`perSecond`). `connectionRate: false` turns it off. A refused connection emits `rejected`.
 - `bindFailures.maxEntries` (50,000) caps the addresses tracked for bans, so a flood from very many addresses cannot grow memory.
@@ -472,7 +513,10 @@ client.on('metric', (m) => prometheus.observe(m));
 
 - The logger is silent by default. Passwords are always masked; SMS content and numbers are masked on request.
 - Every log line carries `sessionId`, `systemId`, `remoteAddress`, `command` and `sequence_number`.
-- Emitted metrics: `pdu.sent`, `pdu.received`, `request.latency`, `request.timeout`, `request.inflight`, `queue.size`, `session.reconnect`, `session.congestion`, `inbound.duplicate`, `command_status`, `bytes.in` and `bytes.out`.
+- Emitted metrics: `pdu.sent`, `pdu.received`, `request.latency`, `request.queueWait`, `request.timeout`, `request.inflight`, `queue.size`, `session.rtt`, `session.reconnect`, `session.congestion`, `reassembly.buffers`, `reassembly.bytes`, `tracker.size`, `inbound.duplicate`, `command_status`, `bytes.in` and `bytes.out`.
+- `request.queueWait` (ms waiting for a window slot) and `session.rtt` (keepalive round trip) are the two signals that show saturation before throughput drops.
+- Gauges (`queue.size`, `request.inflight`, `reassembly.*`, `tracker.size`) are sampled: at most one value every 50 ms per gauge (`gaugeInterval`), and a value of 0 always goes through.
+- PDU logging costs a decode and a deep copy per PDU. It follows `logger.isLevelEnabled('debug')` when the logger has it (pino does); `logPdus: false` turns it off for a logger that does not.
 
 ### OpenTelemetry
 
@@ -571,30 +615,30 @@ Measured with `npm run bench` (Node 24.21, Intel Core i5-8250U laptop from 2017,
 
 | `submit_sm` throughput | Result |
 |---|---|
-| window 10 | 61,700 msg/s |
-| window 50 | 88,000 msg/s |
-| window 100 | 90,900 msg/s |
+| window 10 | 104,300 msg/s |
+| window 50 | 141,300 msg/s |
+| window 100 | 148,500 msg/s |
 
 **Client and server of the library in the same process.** One CPU core does both sides: a lower bound.
 
 | Benchmark | Result |
 |---|---|
-| `submit_sm`, window 1 | 7,300 msg/s |
-| `submit_sm`, window 10 | 21,300 msg/s |
-| `submit_sm`, window 50 | 26,900 msg/s |
-| Round trip, window 1 | p50 0.12 ms · p99 0.18 ms |
+| `submit_sm`, window 1 | 11,400 msg/s |
+| `submit_sm`, window 10 | 35,000 msg/s |
+| `submit_sm`, window 50 | 46,800 msg/s |
+| Round trip, window 1 | p50 0.07 ms · p99 0.09 ms |
 
 **Codec and utilities.**
 
 | Benchmark | Result |
 |---|---|
-| Encode `submit_sm` | 290,000 ops/s |
-| Decode `submit_sm` | 226,000 ops/s |
-| GSM7 encoding (160 characters) | 173,000 ops/s |
-| Split a UCS2 text into 6 parts | 28,000 ops/s |
-| Parse a DLR text | 118,000 ops/s |
+| Encode `submit_sm` | 519,000 ops/s |
+| Decode `submit_sm` | 369,000 ops/s |
+| GSM7 encoding (160 characters) | 281,000 ops/s |
+| Split a UCS2 text into 6 parts | 47,000 ops/s |
+| Parse a DLR text | 174,000 ops/s |
 
-The writes of one batch of responses leave in a single system call (`cork` / `uncork`), the send queue is O(1), and TLVs are encoded from the parameters actually given.
+The writes of one batch of responses leave in a single system call (`cork` / `uncork`), the send queue is O(1), and TLVs are encoded from the parameters actually given. Every deadline of the process — request timeouts, delivery tracking — shares one timer behind a min-heap instead of one `setTimeout` per request, encoding reuses one buffer, and PDU logging is skipped entirely when the logger says the `debug` level is off (`logPdus: false` forces it off).
 
 In practice, the operator's throughput limit (often 10 to 500 msg/s per bind) is reached long before the library's.
 

@@ -22,6 +22,8 @@ import {
   type BindOptions,
   type ClientHealth,
   type EstimateOptions,
+  type SendBinaryOptions,
+  type SendBinaryResult,
   type SendTextMultiOptions,
   type SendTextMultiResult,
   type SendTextOptions,
@@ -35,10 +37,24 @@ import { type ReconnectOptions, backoffDelay, cancellableSleep } from './reconne
 /**
  * How the pool picks a bind for each send:
  * - `least-busy` (default): the bind with the fewest requests in flight or queued;
- * - `round-robin`: each bind in turn.
+ * - `round-robin`: each bind in turn;
+ * - `failover`: always the first bound member in declaration order, the next ones being backups
+ *   (a second operator, a backup SMSC) used only while the ones before them are down.
+ *
+ * `least-busy` and `round-robin` honour each member's `weight` (default 1): a member of weight 3
+ * takes three times the share of one of weight 1. `failover` ignores it.
  * Only bound members are candidates while at least one is bound.
  */
-export type PoolStrategy = 'least-busy' | 'round-robin';
+export type PoolStrategy = 'least-busy' | 'round-robin' | 'failover';
+
+/** A pool member: client options, plus how much traffic it takes. */
+export interface PoolMemberOptions extends Partial<SmppClientOptions> {
+  /**
+   * Share of the traffic, relative to the other members. Default: 1. 0 makes the member a pure
+   * backup: it binds and receives, but is only sent to when no other member can take the request.
+   */
+  weight?: number;
+}
 
 export interface SmppPoolOptions extends SmppClientOptions {
   /** Number of identical binds. Default: 2. Ignored when `members` is set. */
@@ -47,7 +63,7 @@ export interface SmppPoolOptions extends SmppClientOptions {
    * One entry per bind, merged over the shared options: another host, another system_id, another window…
    * `bind` is merged field by field.
    */
-  members?: Array<Partial<SmppClientOptions>>;
+  members?: PoolMemberOptions[];
   strategy?: PoolStrategy;
   /** `connect()` resolves as soon as this many binds are up. Default: 1. */
   minBound?: number;
@@ -108,6 +124,10 @@ export class SmppPool extends EventEmitter<PoolEvents> {
   private readonly sleepers = new Set<{ cancel: () => void }>();
   private concatRef = Math.floor(Math.random() * 0x10000);
   private rr = 0;
+  /** Requests already taken by `rr` in its current weighted round-robin turn. */
+  private rrServed = 0;
+  /** Traffic share of each member (index = member). */
+  private readonly weights: number[];
   private closing = false;
   private connecting: Promise<void> | undefined;
   private onMemberUp: (() => void) | undefined;
@@ -151,14 +171,20 @@ export class SmppPool extends EventEmitter<PoolEvents> {
     );
 
     const { size, members, strategy: _s, minBound: _m, ...shared } = options;
-    const overrides: Array<Partial<SmppClientOptions>> =
+    const overrides: PoolMemberOptions[] =
       members ?? Array.from({ length: Math.max(1, size ?? 2) }, () => ({}));
     if (overrides.length === 0) throw new SmppError('SMPP_CONFIG', 'SmppPool needs at least one member');
+    this.weights = overrides.map((o) => {
+      const w = o.weight ?? 1;
+      if (!Number.isFinite(w) || w < 0) throw new SmppError('SMPP_CONFIG', 'A member weight must be >= 0');
+      return w;
+    });
     this.members = overrides.map((o, i) => {
+      const { weight: _w, ...memberOptions } = o;
       const client = new SmppClient(
         {
           ...shared,
-          ...o,
+          ...memberOptions,
           bind: { ...shared.bind, ...o.bind },
           // Tracking is done once for the pool, by the shared inbound processor.
           trackDeliveries: false,
@@ -361,6 +387,11 @@ export class SmppPool extends EventEmitter<PoolEvents> {
     return this.withMember((m) => m.sendText(opts));
   }
 
+  /** `SmppClient.sendBinary` through one member: every segment goes through the same bind. */
+  sendBinary(opts: SendBinaryOptions): Promise<SendBinaryResult> {
+    return this.withMember((m) => m.sendBinary(opts));
+  }
+
   /** `SmppClient.sendTextMulti` through one member. */
   sendTextMulti(opts: SendTextMultiOptions): Promise<SendTextMultiResult> {
     return this.withMember((m) => m.sendTextMulti(opts));
@@ -436,20 +467,47 @@ export class SmppPool extends EventEmitter<PoolEvents> {
     if (order.length === 0) return undefined;
     const bound = order.filter((i) => this.members[i]!.isBound);
     // No bound member: a reconnecting one keeps the request queued until its re-bind.
-    const candidates = bound.length > 0 ? bound : order;
+    let candidates = bound.length > 0 ? bound : order;
+    const strategy = this.options.strategy ?? 'least-busy';
+
+    if (strategy === 'failover') {
+      // Declaration order decides: the first member that can take the request wins.
+      const chosen = candidates.reduce((a, b) => (a < b ? a : b));
+      this.rr = (chosen + 1) % n;
+      return chosen;
+    }
+
+    // A member of weight 0 is a backup: considered only when nothing else is left.
+    const weighted = candidates.filter((i) => this.weights[i]! > 0);
+    if (weighted.length > 0) candidates = weighted;
+
     let chosen = candidates[0]!;
-    if ((this.options.strategy ?? 'least-busy') === 'least-busy') {
+    if (strategy === 'least-busy') {
       let best = Number.POSITIVE_INFINITY;
       for (const i of candidates) {
         const m = this.members[i]!;
-        const load = m.inflight + m.queueSize;
+        // Load per unit of weight: a member of weight 3 takes three times the share.
+        const load = (m.inflight + m.queueSize) / Math.max(this.weights[i]!, 1e-9);
         if (load < best) {
           best = load;
           chosen = i;
         }
       }
+    } else {
+      // Round robin: a member of weight w takes w requests in a row before the turn moves on.
+      // `candidates` starts at `rr`, so its first entry is the member whose turn it is.
+      chosen = candidates[0]!;
+      const share = Math.max(1, Math.round(this.weights[chosen]!));
+      if (chosen === this.rr && this.rrServed + 1 < share) {
+        this.rrServed++;
+      } else {
+        this.rrServed = 0;
+        this.rr = (chosen + 1) % n;
+      }
+      return chosen;
     }
     this.rr = (chosen + 1) % n;
+    this.rrServed = 0;
     return chosen;
   }
 

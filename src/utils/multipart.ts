@@ -9,6 +9,7 @@ import {
   unpackSeptets,
 } from '../encoding/gsm7.js';
 import { type EncodingRegistry, encodings } from '../encoding/registry.js';
+import { SmppValidationError } from '../errors.js';
 import { ESM_CLASS, UDH_IEI } from '../protocol/constants.js';
 import { type MultipartStrategy, type SegmentOptions, splitText } from './segments.js';
 
@@ -27,11 +28,21 @@ export interface ConcatInfo {
   sequence: number;
 }
 
+/** Application ports of a binary message (UDH IE 0x04 or 0x05). */
+export interface PortInfo {
+  source: number;
+  destination: number;
+  /** Port width announced by the IE. */
+  bits: 8 | 16;
+}
+
 export interface ParsedUdh {
   /** Total UDH size, UDHL included. */
   length: number;
   elements: InformationElement[];
   concat?: ConcatInfo;
+  /** Application port addressing, when the segment carries it. */
+  ports?: PortInfo;
   /** Announced national single shift table (IE 0x24). */
   shift?: NationalLanguage;
   /** Announced national locking shift table (IE 0x25). */
@@ -76,6 +87,10 @@ export function parseUdh(buf: Uint8Array): ParsedUdh | undefined {
       result.concat = { reference: data[0]!, total: data[1]!, sequence: data[2]! };
     } else if (iei === UDH_IEI.CONCAT_16BIT && len === 4) {
       result.concat = { reference: data.readUInt16BE(0), total: data[2]!, sequence: data[3]! };
+    } else if (iei === UDH_IEI.PORTS_8BIT && len === 2) {
+      result.ports = { destination: data[0]!, source: data[1]!, bits: 8 };
+    } else if (iei === UDH_IEI.PORTS_16BIT && len === 4) {
+      result.ports = { destination: data.readUInt16BE(0), source: data.readUInt16BE(2), bits: 16 };
     } else if (iei === UDH_IEI.NATIONAL_SINGLE_SHIFT && len === 1) {
       const lang = LANGUAGE_BY_ID.get(data[0]!);
       if (lang) result.shift = lang;
@@ -190,6 +205,139 @@ export function buildParts(text: string, options: BuildPartsOptions): BuiltParts
   };
 }
 
+/** Maximum payload of one segment, UDH included (3GPP TS 23.040). */
+const SM_OCTETS = 140;
+
+export interface BuildBinaryPartsOptions {
+  /** Concatenation reference (rotating per session). */
+  reference: number;
+  /** `udh8` (default), `udh16`, `sar` or `payload`. */
+  strategy?: MultipartStrategy;
+  /** Destination application port (WAP push: 2948). */
+  destPort?: number;
+  /** Source application port. */
+  sourcePort?: number;
+  /** Port width. Default: 8 when both ports fit in a byte, 16 otherwise. */
+  portBits?: 8 | 16;
+  /** `data_coding`. Default: 0x04 (8-bit binary). */
+  dataCoding?: number;
+  /** Base esm_class (the UDHI bit is added when a UDH is needed). */
+  esmClass?: number;
+}
+
+export interface BuiltBinaryParts {
+  dataCoding: number;
+  strategy: MultipartStrategy;
+  parts: OutboundPart[];
+  /** UDH size of each segment, 0 without one. */
+  udhLength: number;
+}
+
+/** Port addressing IE, when ports are given. */
+function portsElement(options: BuildBinaryPartsOptions): InformationElement | undefined {
+  const { sourcePort, destPort } = options;
+  if (sourcePort === undefined && destPort === undefined) return undefined;
+  const source = sourcePort ?? 0;
+  const destination = destPort ?? 0;
+  for (const [name, value] of [
+    ['sourcePort', source],
+    ['destPort', destination],
+  ] as const) {
+    if (!Number.isInteger(value) || value < 0 || value > 0xffff) {
+      throw new SmppValidationError(`${name} must be an integer between 0 and 65535`, name);
+    }
+  }
+  const bits = options.portBits ?? (source <= 0xff && destination <= 0xff ? 8 : 16);
+  if (bits === 8) {
+    if (source > 0xff || destination > 0xff) {
+      throw new SmppValidationError('8-bit ports must be between 0 and 255', 'portBits');
+    }
+    // Destination first (3GPP TS 23.040 §9.2.3.24.3).
+    return { iei: UDH_IEI.PORTS_8BIT, data: Buffer.from([destination, source]) };
+  }
+  const data = Buffer.alloc(4);
+  data.writeUInt16BE(destination, 0);
+  data.writeUInt16BE(source, 2);
+  return { iei: UDH_IEI.PORTS_16BIT, data };
+}
+
+/**
+ * Splits binary content into segments ready to send: WAP push, a vCard, an OTA configuration,
+ * anything that is not text. Concatenation and application ports go in the UDH, which no caller
+ * then has to build by hand.
+ */
+export function buildBinaryParts(data: Uint8Array, options: BuildBinaryPartsOptions): BuiltBinaryParts {
+  const strategy = options.strategy ?? 'udh8';
+  const dataCoding = options.dataCoding ?? 0x04;
+  const baseEsm = options.esmClass ?? 0;
+  const ports = portsElement(options);
+  const body = Buffer.from(data);
+
+  const build = (chunk: Buffer, ies: InformationElement[]): OutboundPart => {
+    const udh = ies.length > 0 ? buildUdh(ies) : undefined;
+    const content = udh ? Buffer.concat([udh, chunk]) : chunk;
+    const part: OutboundPart = {
+      esm_class: udh ? baseEsm | ESM_CLASS.UDH_INDICATOR : baseEsm,
+      data_coding: dataCoding,
+    };
+    if (strategy === 'payload') part.message_payload = content;
+    else part.short_message = content;
+    return part;
+  };
+
+  // One PDU with message_payload: the SMSC splits it, no concatenation UDH needed.
+  if (strategy === 'payload') {
+    return {
+      dataCoding,
+      strategy,
+      parts: [build(body, ports ? [ports] : [])],
+      udhLength: ports ? ports.data.length + 3 : 0,
+    };
+  }
+
+  const singleUdh = ports ? ports.data.length + 3 : 0;
+  if (body.length <= SM_OCTETS - singleUdh) {
+    return { dataCoding, strategy, parts: [build(body, ports ? [ports] : [])], udhLength: singleUdh };
+  }
+
+  const concatBytes = strategy === 'udh16' ? 6 : strategy === 'udh8' ? 5 : 0;
+  const ieBytes = (ports ? ports.data.length + 2 : 0) + concatBytes;
+  const udhLength = ieBytes > 0 ? ieBytes + 1 : 0;
+  const capacity = SM_OCTETS - udhLength;
+  if (capacity <= 0) {
+    throw new SmppValidationError('The UDH leaves no room for content', 'short_message');
+  }
+  const total = Math.ceil(body.length / capacity);
+  if (total > 255) {
+    throw new SmppValidationError(
+      `Binary message too long (${total} segments, max 255)`,
+      'short_message',
+      0x00000001,
+    );
+  }
+  const parts = Array.from({ length: total }, (_, idx) => {
+    const ies: InformationElement[] = [];
+    if (strategy === 'udh8') {
+      ies.push({ iei: UDH_IEI.CONCAT_8BIT, data: Buffer.from([options.reference & 0xff, total, idx + 1]) });
+    } else if (strategy === 'udh16') {
+      const d = Buffer.alloc(4);
+      d.writeUInt16BE(options.reference & 0xffff, 0);
+      d[2] = total;
+      d[3] = idx + 1;
+      ies.push({ iei: UDH_IEI.CONCAT_16BIT, data: d });
+    }
+    if (ports) ies.push(ports);
+    const part = build(body.subarray(idx * capacity, (idx + 1) * capacity), ies);
+    if (strategy === 'sar') {
+      part.sar_msg_ref_num = options.reference & 0xffff;
+      part.sar_total_segments = total;
+      part.sar_segment_seqnum = idx + 1;
+    }
+    return part;
+  });
+  return { dataCoding, strategy, parts, udhLength };
+}
+
 // ---------------------------------------------------------------------------
 // Decoding incoming messages
 // ---------------------------------------------------------------------------
@@ -272,6 +420,8 @@ export interface ReassemblySegment<T = unknown> {
   dataCoding: number;
   shift?: NationalLanguage;
   locking?: NationalLanguage;
+  /** Application ports of the segment, when it carries them. */
+  ports?: PortInfo;
   /** Free-form attached data (e.g. the original PDU). */
   meta: T;
 }
@@ -289,6 +439,8 @@ export interface ReassembledMessage<T = unknown> {
   segments: ReassemblySegment<T>[];
   /** Missing segment numbers (partial message only). */
   missing: number[];
+  /** Application ports, from the first segment that carries them. */
+  ports?: PortInfo;
 }
 
 export interface ReassemblerOptions<T> {
@@ -437,6 +589,8 @@ export class Reassembler<T = unknown> {
       segments,
       missing,
     };
+    const ports = segments.find((s) => s.ports)?.ports;
+    if (ports) msg.ports = ports;
     if (codec) msg.text = codec.name === 'gsm7' ? decodeGsm7(body, gsm7TablesOf(sample)) : codec.decode(body);
     return msg;
   }

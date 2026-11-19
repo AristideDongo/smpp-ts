@@ -2,6 +2,7 @@ import type { DataSm, DeliverSm } from '../codec/pdu.js';
 import type { EncodingRegistry } from '../encoding/registry.js';
 import { toError } from '../errors.js';
 import type { Logger } from '../logger.js';
+import { GaugeSampler, type Metric } from '../metrics.js';
 import type { Deduplicator, DuplicateKind } from '../utils/dedup.js';
 import type { DeliveryTracker } from '../utils/delivery-tracker.js';
 import {
@@ -10,7 +11,12 @@ import {
   buildDeliveryReport,
   isDeliveryReceipt,
 } from '../utils/dlr.js';
-import { type ReassembledMessage, Reassembler, decodeMessageContent } from '../utils/multipart.js';
+import {
+  type PortInfo,
+  type ReassembledMessage,
+  Reassembler,
+  decodeMessageContent,
+} from '../utils/multipart.js';
 
 export interface InboundMessage {
   from: string;
@@ -22,6 +28,8 @@ export interface InboundMessage {
   parts: number;
   /** Missing segments (partialMessage only). */
   missing: number[];
+  /** Application ports (UDH IE 0x04/0x05), for binary content that carries them. */
+  ports?: PortInfo;
   pdus: Array<DeliverSm | DataSm>;
 }
 
@@ -44,6 +52,8 @@ export interface InboundProcessorOptions {
   tracker?: DeliveryTracker;
   /** Drops receipts and messages already processed (SMSC redeliveries). */
   dedup?: Deduplicator;
+  /** Receives the reassembly and tracking gauges (sampled). */
+  onMetric?: (metric: Metric) => void;
 }
 
 /**
@@ -54,6 +64,7 @@ export interface InboundProcessorOptions {
 export class InboundProcessor {
   readonly tracker: DeliveryTracker | undefined;
   private readonly reassembler: Reassembler<DeliverSm | DataSm>;
+  private readonly gauges = new GaugeSampler();
 
   constructor(
     private readonly options: InboundProcessorOptions,
@@ -71,6 +82,7 @@ export class InboundProcessor {
 
   handle(pdu: DeliverSm | DataSm): void {
     try {
+      this.report();
       const content = decodeMessageContent(
         { ...pdu, short_message: 'short_message' in pdu ? pdu.short_message : undefined } as Parameters<
           typeof decodeMessageContent
@@ -105,6 +117,7 @@ export class InboundProcessor {
           dataCoding: pdu.data_coding,
           ...(content.udh?.shift ? { shift: content.udh.shift } : {}),
           ...(content.udh?.locking ? { locking: content.udh.locking } : {}),
+          ...(content.udh?.ports ? { ports: content.udh.ports } : {}),
           meta: pdu,
         });
         if (done) this.sink.message(toInbound(done));
@@ -120,9 +133,26 @@ export class InboundProcessor {
         pdus: [pdu],
       };
       if (content.text !== undefined) msg.text = content.text;
+      if (content.udh?.ports) msg.ports = content.udh.ports;
       this.sink.message(msg);
     } catch (err) {
       this.options.logger.error('failed to process inbound message', { error: toError(err).message });
+    }
+  }
+
+  /** Emits what the inbound buffers hold, so saturation shows up before anything is dropped. */
+  private report(): void {
+    const sink = this.options.onMetric;
+    if (!sink) return;
+    const gauges: Array<[Metric['name'], number]> = [
+      ['reassembly.buffers', this.reassembler.size],
+      ['reassembly.bytes', this.reassembler.bytes],
+    ];
+    if (this.tracker) gauges.push(['tracker.size', this.tracker.size]);
+    for (const [name, value] of gauges) {
+      if (this.gauges.shouldEmit(name, value)) {
+        sink({ name, type: 'gauge', value } as Metric);
+      }
     }
   }
 
@@ -152,6 +182,7 @@ function toInbound(msg: ReassembledMessage<DeliverSm | DataSm>): InboundMessage 
     pdus: msg.segments.map((s) => s.meta),
   };
   if (msg.text !== undefined) out.text = msg.text;
+  if (msg.ports) out.ports = msg.ports;
   return out;
 }
 

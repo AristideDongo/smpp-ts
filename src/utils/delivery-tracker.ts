@@ -1,3 +1,4 @@
+import { type ScheduledTimeout, defaultTimeoutScheduler } from '../session/timers.js';
 import type { DeliveryReport, DlrStatus } from './dlr.js';
 
 /**
@@ -91,6 +92,9 @@ export function isFinalDlrStatus(status: DlrStatus): boolean {
   return FINAL_STATUSES.has(status);
 }
 
+/** Deadlines of every tracker share the process scheduler. */
+const timers = defaultTimeoutScheduler;
+
 interface Entry {
   key: string;
   expiresAt: number;
@@ -99,12 +103,12 @@ interface Entry {
   remaining: number;
   reference: string | undefined;
   submittedAt: Date;
-  timer: ReturnType<typeof setTimeout>;
+  timer: ScheduledTimeout;
 }
 
 interface Orphan {
   dlr: DeliveryReport;
-  timer: ReturnType<typeof setTimeout>;
+  timer: ScheduledTimeout;
 }
 
 /**
@@ -161,7 +165,7 @@ export class DeliveryTracker {
     for (const id of entry.messageIds) {
       const orphan = this.orphans.get(id);
       if (!orphan) continue;
-      clearTimeout(orphan.timer);
+      timers.cancel(orphan.timer);
       this.orphans.delete(id);
       if (!this.entries.has(entry)) return; // already closed by an earlier orphan
       this.handle(orphan.dlr);
@@ -223,8 +227,8 @@ export class DeliveryTracker {
 
   /** Drops all tracking in progress, without emitting any status. */
   clear(): void {
-    for (const entry of this.entries.keys()) clearTimeout(entry.timer);
-    for (const orphan of this.orphans.values()) clearTimeout(orphan.timer);
+    for (const entry of this.entries.keys()) timers.cancel(entry.timer);
+    for (const orphan of this.orphans.values()) timers.cancel(orphan.timer);
     this.entries.clear();
     this.byId.clear();
     this.orphans.clear();
@@ -245,9 +249,9 @@ export class DeliveryTracker {
       remaining: reports.filter((r) => r === undefined).length,
       reference: record.reference,
       submittedAt: new Date(record.submittedAt),
-      timer: setTimeout(() => this.finish(entry, 'TIMEOUT'), Math.max(0, record.expiresAt - Date.now())),
+      // One shared timer for every deadline: 100 000 tracked messages no longer mean 100 000 timers.
+      timer: timers.schedule(record.expiresAt, () => this.finish(entry, 'TIMEOUT')),
     };
-    entry.timer.unref?.();
     this.entries.set(entry, true);
     entry.messageIds.forEach((id, index) => this.byId.set(id, { entry, index }));
     return entry;
@@ -280,22 +284,21 @@ export class DeliveryTracker {
   private keepOrphan(dlr: DeliveryReport): void {
     const id = dlr.messageId;
     const existing = this.orphans.get(id);
-    if (existing) clearTimeout(existing.timer);
+    if (existing) timers.cancel(existing.timer);
     else if (this.orphans.size >= this.maxOrphans) {
       const [oldestId, oldest] = this.orphans.entries().next().value ?? [];
       if (oldestId !== undefined && oldest) {
-        clearTimeout(oldest.timer);
+        timers.cancel(oldest.timer);
         this.orphans.delete(oldestId);
       }
     }
-    const timer = setTimeout(() => this.orphans.delete(id), this.orphanTtl);
-    timer.unref?.();
+    const timer = timers.schedule(Date.now() + this.orphanTtl, () => this.orphans.delete(id));
     this.orphans.set(id, { dlr, timer });
   }
 
   private finish(entry: Entry, outcome: MessageOutcome): void {
     if (!this.entries.delete(entry)) return;
-    clearTimeout(entry.timer);
+    timers.cancel(entry.timer);
     if (this.store) this.storeCall(() => this.store!.delete(entry.key));
     for (const id of entry.messageIds) {
       if (this.byId.get(id)?.entry === entry) this.byId.delete(id);
