@@ -1,0 +1,14 @@
+---
+'smpp-ts': minor
+---
+
+Bounded memory everywhere, admission limits on the server, client-certificate authentication.
+
+- **Reassembly budget**: `reassembly.maxBytes` (4 MiB by default, `0` disables it) caps the content held by incomplete multipart messages. `maxBuffers` alone did not bound memory — one buffer holds up to 255 segments, and a segment carried by `message_payload` can be as large as `maxPduLength`, so 1,000 buffers could hold gigabytes. The oldest buffers are evicted first and still reported through `partialMessage`; the buffer the incoming segment belongs to is never the victim. `Reassembler` exposes `bytes`.
+- **Connection rate** (`connectionRate`, SEC-05): connections are now limited before a single byte is read and before the TLS handshake — 20 per second per address with a burst of 40 by default, plus an optional total (`perSecond`). `maxSessions` / `maxSessionsPerIp` bound how many connections live at once and said nothing about a connect/disconnect loop, which burns CPU (one TLS handshake per cycle) without ever reaching them. `connectionRate: false` restores the previous behaviour. Refused connections emit `rejected`. New exports `ConnectionRateLimiter`, `ConnectionRatePolicy`, `ConnectionRateVerdict`.
+- **Aggregate write budget** (`maxTotalWriteBuffer`, 64 MiB): `maxWriteBuffer` bounds one session, but `maxSessions` sessions just under their own limit still add up (1,000 × 1 MiB). Beyond the budget the heaviest sessions are closed. `server.bufferedBytes` and `session.bufferedBytes` report what is waiting.
+- **`bindFailures.maxEntries`** (50,000): hard cap on the addresses tracked for bans. The previous pruning only dropped expired entries, so a flood coming from a very large number of addresses grew the map without limit. `BindFailureTracker` exposes `size`.
+- **Client-certificate authentication (mTLS)**: with `tls: { requestCert: true }`, `authenticate()` receives `ctx.tls` (`authorized`, `subject`, `issuer`, `fingerprint256`, `protocol`, `cipher`), also available as `serverSession.tls`. A bind can now be granted on the certificate rather than on the password. New exported type `TlsPeerInfo`.
+- **`validateEnums`** (`new PduCodec({ validateEnums: true })`, off by default): checks `ton`, `npi`, `data_coding`, `esm_class`, `priority_flag`, `registered_delivery` and `replace_if_present_flag` against the values the specification allows, **when encoding only** — the mistake is caught locally with the right `ESME_RINV…` status instead of one round trip later. Decoding stays lenient: operators do send values the specification does not list.
+- **`SmppConnectionClosedError.written`** now reports what really happened: a request the socket never took is flagged `written: false` and can be resent safely. Every in-flight request used to be reported as possibly written.
+- `listen(port, host, backlog)` accepts the kernel accept queue size.

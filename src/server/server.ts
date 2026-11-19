@@ -19,7 +19,8 @@ import {
   rejectSpoofedProxyHeader,
 } from '../transport/proxy-protocol.js';
 import { type BindFailurePolicy, BindFailureTracker } from './auth.js';
-import { ServerSession } from './server-session.js';
+import { ConnectionRateLimiter, type ConnectionRatePolicy } from './limits.js';
+import { ServerSession, type TlsPeerInfo } from './server-session.js';
 
 export interface AuthContext {
   system_id: string;
@@ -28,6 +29,12 @@ export interface AuthContext {
   interface_version: number;
   remoteAddress: string;
   mode: BindMode;
+  /**
+   * TLS details of the connection, `undefined` on plain TCP: lets `authenticate()` check a client
+   * certificate (mTLS) on top of, or instead of, the password. See `TlsPeerInfo` for the two setups
+   * (`rejectUnauthorized` true or false) and what `authorized` means in each.
+   */
+  tls?: TlsPeerInfo;
   /**
    * Aborted when `handlerTimeout` expires or the connection closes: the bind has then already been
    * answered, so the result is ignored.
@@ -138,6 +145,19 @@ export interface SmppServerOptions<Ctx = unknown> {
   inboundWindowPolicy?: 'pause' | 'throttle';
   /** Bytes allowed in a session's write buffer before it is closed. Default: 1 MiB. */
   maxWriteBuffer?: number;
+  /**
+   * Bytes allowed in the write buffers of every session together: beyond it the heaviest sessions
+   * are closed until the total fits. Default: 64 MiB. 0 = no limit.
+   *
+   * `maxWriteBuffer` bounds one session; without this budget, `maxSessions` sessions each just under
+   * their own limit still add up (1 000 × 1 MiB).
+   */
+  maxTotalWriteBuffer?: number;
+  /**
+   * Rate of accepted connections, per address and in total (SEC-05).
+   * Default: 20 per second per address, burst of 40; no total limit. `false` disables it.
+   */
+  connectionRate?: ConnectionRatePolicy | false;
 
   /** Proxy Protocol v1/v2. Disabled by default. */
   proxyProtocol?: ProxyProtocolOptions;
@@ -186,6 +206,8 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
   /** In-flight handler and authenticate() controllers, aborted by one shared `close` listener (#31). */
   private readonly inflight = new WeakMap<ServerSession<Ctx>, Set<AbortController>>();
   private readonly handlers: Handlers<Ctx>;
+  private readonly rate: ConnectionRateLimiter | undefined;
+  private writeBudgetTimer: ReturnType<typeof setInterval> | undefined;
   private rr = 0;
 
   constructor(options: SmppServerOptions<Ctx>) {
@@ -198,6 +220,9 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     this.logger = options.logger ?? silentLogger;
     this.codec = new PduCodec(options.codec);
     this.failures = new BindFailureTracker(options.bindFailures);
+    if (options.connectionRate !== false) {
+      this.rate = new ConnectionRateLimiter(options.connectionRate ?? {});
+    }
     if (options.proxyProtocol) {
       if (!options.proxyProtocol.trustedProxies?.length) {
         throw new SmppError('SMPP_CONFIG', 'proxyProtocol.trustedProxies must list at least one CIDR');
@@ -218,12 +243,12 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     );
   }
 
-  /** Starts listening. */
-  listen(port = 2775, host?: string): Promise<net.AddressInfo> {
+  /** Starts listening. `backlog` is the kernel accept queue (Node's default: 511). */
+  listen(port = 2775, host?: string, backlog?: number): Promise<net.AddressInfo> {
     return new Promise((resolve, reject) => {
       const onError = (err: Error) => reject(err);
       this.server.once('error', onError);
-      this.server.listen(port, host, () => {
+      this.server.listen(port, host, backlog, () => {
         this.server.off('error', onError);
         const addr = this.server.address() as net.AddressInfo;
         this.logger.info('SMPP server listening', {
@@ -245,7 +270,15 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
   async close(): Promise<void> {
     const closed = new Promise<void>((resolve) => this.server.close(() => resolve()));
     await Promise.allSettled([...this.sessions].map((s) => s.close()));
+    this.stopWriteBudgetWatch();
     await closed;
+  }
+
+  /** Bytes waiting in the write buffers of every session (what `maxTotalWriteBuffer` bounds). */
+  get bufferedBytes(): number {
+    let total = 0;
+    for (const ss of this.sessions) total += ss.session.bufferedBytes;
+    return total;
   }
 
   /** Bound sessions for a system_id. */
@@ -301,6 +334,15 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     let ip = normalizeIp(socket.remoteAddress ?? 'unknown');
     const early = this.admissible(ip);
     if (early) return this.reject(socket, ip, early);
+    // Before any byte is read, and before TLS: a connect/disconnect loop must not burn CPU.
+    const verdict = this.rate?.check(ip) ?? 'ok';
+    if (verdict !== 'ok') {
+      return this.reject(
+        socket,
+        ip,
+        verdict === 'ip-rate' ? 'connection rate per address exceeded' : 'total connection rate exceeded',
+      );
+    }
 
     // Counted from now until the socket closes, whatever stage it reaches (handshake, PROXY header…).
     this.connections++;
@@ -312,6 +354,7 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     });
 
     let stream: Duplex = socket;
+    let tlsInfo: TlsPeerInfo | undefined;
     if (this.trusted) {
       const timeout = this.options.proxyProtocol?.headerTimeout ?? 5_000;
       if (this.trusted.has(ip)) {
@@ -334,11 +377,13 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     }
 
     if (this.secureContext) {
+      const requestCert = Boolean(this.options.tls?.requestCert);
+      const rejectUnauthorized = this.options.tls?.rejectUnauthorized ?? true;
       const tlsSocket = new tls.TLSSocket(stream === socket ? socket : (stream as unknown as net.Socket), {
         isServer: true,
         secureContext: this.secureContext,
-        requestCert: Boolean(this.options.tls?.requestCert),
-        rejectUnauthorized: this.options.tls?.rejectUnauthorized ?? true,
+        requestCert,
+        rejectUnauthorized,
       });
       tlsSocket.on('error', () => tlsSocket.destroy());
       socket.resume();
@@ -357,12 +402,14 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
         });
       });
       stream = tlsSocket;
+      // Reaching this point with both flags on means OpenSSL verified the client chain itself.
+      tlsInfo = peerInfo(tlsSocket, requestCert && rejectUnauthorized);
     }
 
-    this.startSession(stream, socket, ip);
+    this.startSession(stream, socket, ip, tlsInfo);
   }
 
-  private startSession(stream: Duplex, raw: net.Socket, ip: string): void {
+  private startSession(stream: Duplex, raw: net.Socket, ip: string, tlsInfo?: TlsPeerInfo): void {
     const o = this.options;
     const session = new Session(stream as Duplex & { remoteAddress?: string }, {
       role: 'smsc',
@@ -379,8 +426,9 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
       ...(o.maxWriteBuffer !== undefined ? { maxWriteBuffer: o.maxWriteBuffer } : {}),
       logContext: { remoteAddress: ip },
     });
-    const ss = new ServerSession<Ctx>(session, ip);
+    const ss = new ServerSession<Ctx>(session, ip, tlsInfo);
     this.sessions.add(ss);
+    this.startWriteBudgetWatch();
     // One close listener aborts every in-flight handler, whatever inboundWindow is (#31).
     const inflight = new Set<AbortController>();
     this.inflight.set(ss, inflight);
@@ -436,6 +484,7 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     session.on('close', () => {
       clearTimeout(bindTimer);
       this.sessions.delete(ss);
+      if (this.sessions.size === 0) this.stopWriteBudgetWatch();
       this.emitSafe('sessionClose', ss);
     });
     this.emitSafe('session', ss);
@@ -538,6 +587,7 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
               interface_version: pdu.interface_version,
               remoteAddress: ip,
               mode,
+              ...(ss.tls ? { tls: ss.tls } : {}),
               signal: ac.signal,
             }),
           ),
@@ -607,6 +657,44 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     this.emitSafe('bind', ss);
   }
 
+  // ---------------------------------------------------------------- write budget
+
+  private startWriteBudgetWatch(): void {
+    if (this.writeBudgetTimer || (this.options.maxTotalWriteBuffer ?? DEFAULT_TOTAL_WRITE_BUFFER) <= 0)
+      return;
+    this.writeBudgetTimer = setInterval(() => this.checkWriteBudget(), 500);
+    this.writeBudgetTimer.unref?.();
+  }
+
+  private stopWriteBudgetWatch(): void {
+    if (this.writeBudgetTimer) clearInterval(this.writeBudgetTimer);
+    this.writeBudgetTimer = undefined;
+  }
+
+  /** Closes the heaviest sessions while the write buffers exceed the budget together. */
+  private checkWriteBudget(): void {
+    const budget = this.options.maxTotalWriteBuffer ?? DEFAULT_TOTAL_WRITE_BUFFER;
+    if (budget <= 0) return;
+    const sessions = [...this.sessions];
+    let total = 0;
+    for (const ss of sessions) total += ss.session.bufferedBytes;
+    if (total <= budget) return;
+    sessions.sort((a, b) => b.session.bufferedBytes - a.session.bufferedBytes);
+    for (const ss of sessions) {
+      if (total <= budget) return;
+      const bytes = ss.session.bufferedBytes;
+      this.logger.error('total write buffer budget exceeded, closing the heaviest session', {
+        sessionId: ss.id,
+        remoteAddress: ss.remoteAddress,
+        writableLength: bytes,
+        total,
+        maxTotalWriteBuffer: budget,
+      });
+      ss.session.destroy(new SmppError('SMPP_WRITE_BUDGET', `Server write buffers over ${budget} bytes`));
+      total -= bytes;
+    }
+  }
+
   // ---------------------------------------------------------------- helpers
 
   /**
@@ -644,6 +732,36 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     if (this.listenerCount('error') > 0) this.emitSafe('error', err);
     else this.logger.error(err.message, { code: err.code });
   }
+}
+
+/** Default aggregate write-buffer budget: 64 MiB. */
+const DEFAULT_TOTAL_WRITE_BUFFER = 64 * 1024 * 1024;
+
+/**
+ * TLS details handed to `authenticate()` (SEC-06: client-certificate authentication).
+ *
+ * `verified` says whether the handshake enforced client-certificate verification. A server-side
+ * `tls.TLSSocket` built on an accepted socket leaves `authorized` at false even when OpenSSL did
+ * verify the chain, so the flag is derived from the handshake having succeeded under
+ * `requestCert` + `rejectUnauthorized`, with a peer certificate present.
+ */
+function peerInfo(socket: tls.TLSSocket, verified: boolean): TlsPeerInfo {
+  const cert = socket.getPeerCertificate();
+  const hasCert = Boolean(cert) && Object.keys(cert).length > 0;
+  const info: TlsPeerInfo = { authorized: socket.authorized || (verified && hasCert) };
+  const error = socket.authorizationError as Error | string | undefined;
+  if (error) info.authorizationError = typeof error === 'string' ? error : error.message;
+  const protocol = socket.getProtocol();
+  if (protocol) info.protocol = protocol;
+  const cipher = socket.getCipher()?.name;
+  if (cipher) info.cipher = cipher;
+  if (hasCert) {
+    if (cert.subject) info.subject = cert.subject as unknown as Record<string, unknown>;
+    if (cert.issuer) info.issuer = cert.issuer as unknown as Record<string, unknown>;
+    if (cert.fingerprint256) info.fingerprint256 = cert.fingerprint256;
+    if (cert.valid_to) info.validTo = cert.valid_to;
+  }
+  return info;
 }
 
 function statusOf(err: unknown): number {

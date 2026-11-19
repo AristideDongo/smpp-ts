@@ -185,7 +185,11 @@ export interface SmppClientOptions {
    * Default: a counter starting at a random value. Share one between clients that send to the same numbers.
    */
   concatReference?: () => number;
-  reassembly?: { ttl?: number; maxBuffers?: number };
+  /**
+   * Reassembly of incoming long messages: `ttl` (5 min), `maxBuffers` (1 000 incomplete messages)
+   * and `maxBytes` (4 MiB of content held, 0 = no limit).
+   */
+  reassembly?: { ttl?: number; maxBuffers?: number; maxBytes?: number };
   /** Incoming GSM7 septets are packed. Default: false. */
   packedGsm7?: boolean;
   encodings?: EncodingRegistry;

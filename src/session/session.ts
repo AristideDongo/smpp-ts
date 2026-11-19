@@ -275,6 +275,11 @@ export class Session extends EventEmitter<SessionEvents> {
     return this.lastReceived;
   }
 
+  /** Bytes waiting in the socket write buffer (what `maxWriteBuffer` bounds). */
+  get bufferedBytes(): number {
+    return this.socket.destroyed ? 0 : this.socket.writableLength;
+  }
+
   /**
    * Stops writing queued requests (they stay queued) and resolves once no request is in flight,
    * or after `timeoutMs`. Used before a graceful re-bind.
@@ -536,8 +541,8 @@ export class Session extends EventEmitter<SessionEvents> {
       }
     };
     req.writtenAt = Date.now();
-    req.written = true;
-    this.write(req.encoded, req.command);
+    // `written` reports what really happened: a request the socket never took can be resent safely.
+    req.written = this.write(req.encoded, req.command);
     if (!req.control) this.emitMetric({ name: 'request.inflight', type: 'gauge', value: this.windowUsed });
   }
 
@@ -606,8 +611,9 @@ export class Session extends EventEmitter<SessionEvents> {
     }
   }
 
-  private write(buf: Buffer, command: CommandName, status = 0): void {
-    if (this.closed || this.socket.destroyed) return;
+  /** Writes a PDU. Returns `false` when the socket could not take it (closed or destroyed). */
+  private write(buf: Buffer, command: CommandName, status = 0): boolean {
+    if (this.closed || this.socket.destroyed) return false;
     this.logPdu('sent', buf);
     const ok = this.socket.write(buf);
     if (!ok && !this.writeBlocked) {
@@ -634,6 +640,7 @@ export class Session extends EventEmitter<SessionEvents> {
         labels: { command, status: statusName(status) },
       });
     }
+    return true;
   }
 
   private onRequestTimeout(req: PendingRequest): void {
@@ -883,7 +890,13 @@ export class Session extends EventEmitter<SessionEvents> {
     const cause = this.closeError;
     // BUG-02: every in-flight request is rejected, flagged with whether it was written.
     for (const req of [...this.inflight.values()]) {
-      req.reject(new SmppConnectionClosedError(true, 'Connection closed before response', { cause }));
+      req.reject(
+        new SmppConnectionClosedError(
+          req.written,
+          req.written ? 'Connection closed before response' : 'Connection closed before sending',
+          { cause },
+        ),
+      );
     }
     this.inflight.clear();
     this.windowUsed = 0;

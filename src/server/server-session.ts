@@ -6,6 +6,39 @@ import type { RequestOptions, ResponseOf, Session } from '../session/session.js'
 import type { BindMode, SessionState } from '../session/state-machine.js';
 import { type DlrStatus, dlrStatusToMessageState, formatDlr } from '../utils/dlr.js';
 
+/**
+ * TLS details of a connection, for client-certificate authentication (mTLS).
+ *
+ * Two ways to use it, both with `tls.requestCert: true`:
+ * - `tls.rejectUnauthorized: true` (the default): TLS itself refuses a client whose certificate is
+ *   not signed by one of the configured CAs, so `authenticate()` only ever sees `authorized: true`
+ *   and pins the identity it expects (`subject.CN`, `fingerprint256`);
+ * - `tls.rejectUnauthorized: false`: every client completes the handshake and the hook decides. Node
+ *   then skips chain verification, so `authorized` is **false even for a valid certificate**: pin
+ *   `fingerprint256` (or verify the chain yourself), never trust `subject` alone.
+ */
+export interface TlsPeerInfo {
+  /**
+   * `true` when the handshake verified the client certificate against the configured CAs.
+   * Always `false` with `tls.rejectUnauthorized: false`, which turns verification off (see above).
+   */
+  authorized: boolean;
+  /** Why the certificate was refused, when the handshake did verify it. */
+  authorizationError?: string;
+  /** Negotiated protocol, e.g. `TLSv1.3`. */
+  protocol?: string;
+  /** Negotiated cipher suite name. */
+  cipher?: string;
+  /** Client certificate subject, empty when the client sent none. */
+  subject?: Record<string, unknown>;
+  /** Issuer of the client certificate. */
+  issuer?: Record<string, unknown>;
+  /** Certificate fingerprint (SHA-256). */
+  fingerprint256?: string;
+  /** `notAfter` of the client certificate. */
+  validTo?: string;
+}
+
 /** Server-side session, exposed to handlers and to the authentication hook. */
 export class ServerSession<Ctx = unknown> {
   /** Bind mode, once authenticated. */
@@ -17,6 +50,8 @@ export class ServerSession<Ctx = unknown> {
     readonly session: Session,
     /** Client address (the real one behind Proxy Protocol). */
     readonly remoteAddress: string,
+    /** TLS details, `undefined` on a plain TCP connection. */
+    readonly tls?: TlsPeerInfo,
   ) {}
 
   get id(): string {

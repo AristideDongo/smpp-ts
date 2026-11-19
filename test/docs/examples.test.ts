@@ -46,6 +46,8 @@ declare global {
   const params: PduParams<'submit_sm'>;
   const key: string;
   const cert: string;
+  const clientCa: string;
+  const KNOWN_FINGERPRINT: string;
   const readFileSync: typeof import('node:fs').readFileSync;
   const expect: typeof vitest.expect;
   const it: typeof vitest.it;

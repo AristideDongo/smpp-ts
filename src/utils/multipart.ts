@@ -296,6 +296,16 @@ export interface ReassemblerOptions<T> {
   ttl?: number;
   /** Maximum number of incomplete messages in memory. Default: 1 000 (SEC-04). */
   maxBuffers?: number;
+  /**
+   * Maximum number of content octets held by the incomplete messages, all buffers together.
+   * Default: 4 MiB. 0 = no limit.
+   *
+   * `maxBuffers` alone does not bound memory: one buffer holds up to 255 segments, and a segment
+   * carried by `message_payload` can be as large as `maxPduLength`. Each held segment also keeps its
+   * source PDU, so the real footprint is roughly twice this budget. The oldest buffers are evicted
+   * (and reported through `onPartial`) until the total fits.
+   */
+  maxBytes?: number;
   registry?: EncodingRegistry;
   /** Called when an incomplete message expires or is evicted. */
   onPartial?: (msg: ReassembledMessage<T>) => void;
@@ -304,6 +314,8 @@ export interface ReassemblerOptions<T> {
 interface Bucket<T> {
   segments: Map<number, ReassemblySegment<T>>;
   total: number;
+  /** Content octets held by this bucket's segments. */
+  bytes: number;
   timer: ReturnType<typeof setTimeout>;
 }
 
@@ -312,16 +324,25 @@ export class Reassembler<T = unknown> {
   private readonly buckets = new Map<string, Bucket<T>>();
   private readonly ttl: number;
   private readonly maxBuffers: number;
+  private readonly maxBytes: number;
   private readonly registry: EncodingRegistry;
+  /** Content octets held by every incomplete message. */
+  private heldBytes = 0;
 
   constructor(private readonly options: ReassemblerOptions<T> = {}) {
     this.ttl = options.ttl ?? 5 * 60_000;
     this.maxBuffers = options.maxBuffers ?? 1000;
+    this.maxBytes = Math.max(0, options.maxBytes ?? 4 * 1024 * 1024);
     this.registry = options.registry ?? encodings;
   }
 
   get size(): number {
     return this.buckets.size;
+  }
+
+  /** Content octets held by the incomplete messages (SEC-04). */
+  get bytes(): number {
+    return this.heldBytes;
   }
 
   /** Adds a segment. Returns the full message once every segment has arrived. */
@@ -334,20 +355,51 @@ export class Reassembler<T = unknown> {
       if (this.buckets.size >= this.maxBuffers) this.evictOldest();
       const timer = setTimeout(() => this.expire(key), this.ttl);
       timer.unref?.();
-      bucket = { segments: new Map(), total: concat.total, timer };
+      bucket = { segments: new Map(), total: concat.total, bytes: 0, timer };
       this.buckets.set(key, bucket);
     }
-    bucket.segments.set(concat.sequence, segment); // duplicate: the last one wins
-    if (bucket.segments.size < bucket.total) return undefined;
-    clearTimeout(bucket.timer);
-    this.buckets.delete(key);
-    return this.assemble(bucket, segment);
+    // Duplicate: the last one wins, and only its octets are counted.
+    const replaced = bucket.segments.get(concat.sequence);
+    if (replaced) this.countBytes(bucket, -replaced.body.length);
+    bucket.segments.set(concat.sequence, segment);
+    this.countBytes(bucket, segment.body.length);
+    if (bucket.segments.size >= bucket.total) {
+      clearTimeout(bucket.timer);
+      this.buckets.delete(key);
+      this.countBytes(bucket, -bucket.bytes);
+      return this.assemble(bucket, segment);
+    }
+    // The newest buffer is kept: evicting it would discard the segment just received.
+    this.enforceBudget(key);
+    return undefined;
   }
 
   /** Clears the buffers (without emitting partial messages). */
   clear(): void {
     for (const b of this.buckets.values()) clearTimeout(b.timer);
     this.buckets.clear();
+    this.heldBytes = 0;
+  }
+
+  private countBytes(bucket: Bucket<T>, delta: number): void {
+    bucket.bytes += delta;
+    this.heldBytes += delta;
+  }
+
+  /** Evicts the oldest buffers until the octet budget is met (`keep` is never evicted). */
+  private enforceBudget(keep: string): void {
+    if (this.maxBytes === 0) return;
+    while (this.heldBytes > this.maxBytes) {
+      let victim: string | undefined;
+      for (const key of this.buckets.keys()) {
+        if (key !== keep) {
+          victim = key;
+          break;
+        }
+      }
+      if (victim === undefined) return; // only the newest buffer is left
+      this.expire(victim);
+    }
   }
 
   private evictOldest(): void {
@@ -360,6 +412,7 @@ export class Reassembler<T = unknown> {
     if (!bucket) return;
     clearTimeout(bucket.timer);
     this.buckets.delete(key);
+    this.countBytes(bucket, -bucket.bytes);
     const any = bucket.segments.values().next().value;
     if (any) this.options.onPartial?.(this.assemble(bucket, any));
   }
