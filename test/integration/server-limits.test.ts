@@ -40,6 +40,12 @@ function rawConnect(port: number): Promise<net.Socket> {
   });
 }
 
+/** True once the peer closed this socket. `destroyed` alone is not observed at the same moment on
+ * every platform, so a refused connection is awaited rather than sampled. */
+function isClosed(socket: net.Socket): boolean {
+  return socket.destroyed || socket.readyState === 'closed' || socket.readyState === 'readOnly';
+}
+
 describe('connection rate (SEC-05)', () => {
   it('refuses connections opened faster than the per-address rate', async () => {
     const rejected: string[] = [];
@@ -53,8 +59,9 @@ describe('connection rate (SEC-05)', () => {
     expect(rejected.every((r) => r.includes('connection rate'))).toBe(true);
     // The burst got through, the rest was dropped before a single byte was read.
     expect(server.sessions.size).toBeLessThanOrEqual(2);
-    const closed = sockets.filter((s) => s.destroyed || s.readyState === 'closed');
-    expect(closed.length).toBeGreaterThanOrEqual(1);
+    // The refusal reaches the client as a close; how fast depends on the platform.
+    await until(() => sockets.filter(isClosed).length >= 1, 5_000);
+    expect(sockets.filter(isClosed).length).toBeGreaterThanOrEqual(1);
   });
 
   it('lets a client through once the bucket refills, and a legitimate bind still works', async () => {

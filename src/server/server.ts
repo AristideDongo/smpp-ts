@@ -248,7 +248,11 @@ export class SmppServer<Ctx = unknown> extends EventEmitter<ServerEvents<Ctx>> {
     return new Promise((resolve, reject) => {
       const onError = (err: Error) => reject(err);
       this.server.once('error', onError);
-      this.server.listen(port, host, backlog, () => {
+      // Options form: a positional `backlog` of `undefined` is not portable across runtimes.
+      const options: net.ListenOptions = { port };
+      if (host !== undefined) options.host = host;
+      if (backlog !== undefined) options.backlog = backlog;
+      this.server.listen(options, () => {
         this.server.off('error', onError);
         const addr = this.server.address() as net.AddressInfo;
         this.logger.info('SMPP server listening', {
