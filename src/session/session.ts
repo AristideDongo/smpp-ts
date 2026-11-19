@@ -321,10 +321,12 @@ export class Session extends EventEmitter<SessionEvents> {
    */
   drain(timeoutMs: number, includeQueue = false): Promise<void> {
     if (this.closed || this.isDrained(includeQueue)) return Promise.resolve();
+    // A timeout of 0 (or anything not a positive number) means "do not wait", never "wait forever".
+    if (!(timeoutMs > 0)) return Promise.resolve();
     return new Promise<void>((resolve) => {
       const waiter = { resolve, includeQueue };
       this.drainWaiters.add(waiter);
-      if (timeoutMs > 0 && Number.isFinite(timeoutMs)) {
+      if (Number.isFinite(timeoutMs)) {
         const timer = setTimeout(() => {
           if (this.drainWaiters.delete(waiter)) resolve();
         }, timeoutMs);

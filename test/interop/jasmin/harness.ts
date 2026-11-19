@@ -121,7 +121,7 @@ export class UpstreamSmsc {
     for (;;) {
       const v = await pred();
       if (v) return v;
-      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what} (${this.describe()})`);
       await new Promise<void>((resolve) => {
         const t = setTimeout(resolve, 100);
         this.waiters.add(() => {
@@ -130,6 +130,16 @@ export class UpstreamSmsc {
         });
       });
     }
+  }
+
+  /** State of the upstream SMSC, to tell a stalled session from a missing one when a wait fails. */
+  describe(): string {
+    const sessions = [...this.server.sessions].map(
+      (ss) =>
+        `${ss.systemId ?? '?'}:${ss.session.state}${ss.session.isPaused ? ' PAUSED' : ''}` +
+        ` inflight=${ss.session.inflightCount} buffered=${ss.session.bufferedBytes}`,
+    );
+    return `submits=${this.submits.length} sessions=[${sessions.join(' | ') || 'none'}]`;
   }
 
   /** Submits received for a destination, in arrival order (accepted ones only). */
