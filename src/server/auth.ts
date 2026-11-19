@@ -28,6 +28,13 @@ export interface BindFailurePolicy {
   windowMs?: number;
   /** Ban duration. Default: 5 min. */
   banMs?: number;
+  /**
+   * Hard cap on the number of addresses tracked at once. Default: 50 000 (a few MiB).
+   * Beyond it the least recently seen entries are dropped, so a flood coming from a very large
+   * number of addresses cannot grow memory without limit — at the cost of forgetting the oldest
+   * bans. Lower it on a small instance, raise it to keep bans longer under a distributed attack.
+   */
+  maxEntries?: number;
 }
 
 /** Limits failed bind attempts per IP (SEC-05). */
@@ -36,6 +43,7 @@ export class BindFailureTracker {
   private readonly maxAttempts: number;
   private readonly windowMs: number;
   private readonly banMs: number;
+  private readonly maxEntries: number;
 
   constructor(
     policy: BindFailurePolicy = {},
@@ -44,6 +52,12 @@ export class BindFailureTracker {
     this.maxAttempts = policy.maxAttempts ?? 5;
     this.windowMs = policy.windowMs ?? 60_000;
     this.banMs = policy.banMs ?? 5 * 60_000;
+    this.maxEntries = Math.max(1, policy.maxEntries ?? 50_000);
+  }
+
+  /** Addresses currently tracked (failures within the window, or banned). */
+  get size(): number {
+    return this.entries.size;
   }
 
   isBanned(ip: string): boolean {
@@ -66,6 +80,8 @@ export class BindFailureTracker {
       e.failures = [];
       banned = true;
     }
+    // Re-inserted last: the Map keeps insertion order, so the oldest entry is the first one.
+    this.entries.delete(ip);
     this.entries.set(ip, e);
     this.prune(t);
     return banned;
@@ -77,9 +93,16 @@ export class BindFailureTracker {
   }
 
   private prune(t: number): void {
-    if (this.entries.size < 10_000) return;
+    if (this.entries.size < Math.min(10_000, this.maxEntries)) return;
     for (const [ip, e] of this.entries) {
       if (e.bannedUntil < t && e.failures.every((f) => t - f >= this.windowMs)) this.entries.delete(ip);
+    }
+    // Everything still tracked is live (banned or failing): drop the oldest to keep the cap.
+    // Without this, a flood from many addresses grows the map without limit.
+    while (this.entries.size > this.maxEntries) {
+      const oldest = this.entries.keys().next();
+      if (oldest.done) return;
+      this.entries.delete(oldest.value);
     }
   }
 }

@@ -11,6 +11,7 @@ import {
   isResponseCommand,
 } from '../protocol/commands.js';
 import { HEADER_LENGTH, MAX_SEQUENCE_NUMBER } from '../protocol/constants.js';
+import { ENUM_RULES } from '../protocol/enums.js';
 import { COMMAND_STATUS } from '../protocol/status.js';
 import {
   type NetworkErrorCode,
@@ -84,6 +85,16 @@ export interface CodecOptions {
   strict?: boolean;
   /** Maximum PDU size (SEC-04). Default: 16 384 bytes. */
   maxPduLength?: number;
+  /**
+   * Checks the enumerated fields (`ton`, `npi`, `data_coding`, `esm_class`, `priority_flag`,
+   * `registered_delivery`, `replace_if_present_flag`) against the values the specification allows,
+   * **when encoding only** (SEC-03). Default: false.
+   *
+   * On by default would break senders that an operator accepts with off-spec values; on request, it
+   * catches the mistake locally instead of one round trip later. Decoding is never checked: incoming
+   * traffic does carry values the specification does not list.
+   */
+  validateEnums?: boolean;
 }
 
 export const DEFAULT_MAX_PDU_LENGTH = 16_384;
@@ -106,12 +117,14 @@ const STANDARD_TLVS_BY_TAG = new Map<number, [string, TlvDefinition]>(
 export class PduCodec {
   readonly strict: boolean;
   readonly maxPduLength: number;
+  readonly validateEnums: boolean;
   private readonly customByTag = new Map<number, CustomTlvDefinition>();
   private readonly customByName = new Map<string, CustomTlvDefinition>();
 
   constructor(options: CodecOptions = {}) {
     this.strict = options.strict ?? true;
     this.maxPduLength = options.maxPduLength ?? DEFAULT_MAX_PDU_LENGTH;
+    this.validateEnums = options.validateEnums ?? false;
     for (const def of options.customTlvs ?? []) {
       if (STANDARD_TLVS_BY_TAG.has(def.tag) || this.customByTag.has(def.tag)) {
         throw new SmppError('SMPP_CONFIG', `Duplicate TLV tag 0x${def.tag.toString(16)} (${def.name})`);
@@ -164,6 +177,7 @@ export class PduCodec {
     const value = params[field.name];
     switch (field.type) {
       case 'uint8':
+        if (this.validateEnums) checkEnum(field.name, value);
         w.uint8(field.name, value ?? 0);
         return;
       case 'uint16':
@@ -198,7 +212,7 @@ export class PduCodec {
         return;
       }
       case 'dest_address_list':
-        encodeDestAddresses(w, value);
+        encodeDestAddresses(w, value, this.validateEnums);
         return;
       case 'unsuccess_sme_list':
         encodeUnsuccessSmes(w, value);
@@ -473,7 +487,19 @@ function toShortMessageBytes(value: unknown, dataCoding: unknown): Uint8Array {
   throw new SmppValidationError('short_message must be a Buffer, Uint8Array or string', 'short_message');
 }
 
-function encodeDestAddresses(w: Writer, value: unknown): void {
+/** Throws when an enumerated field carries a value the specification does not allow (SEC-03). */
+function checkEnum(field: string, value: unknown): void {
+  const rule = ENUM_RULES[field];
+  if (!rule || typeof value !== 'number') return;
+  if (rule.allowed(value)) return;
+  throw new SmppValidationError(
+    `Field ${field} has value ${value}, which the specification does not allow (expected ${rule.expected})`,
+    field,
+    rule.status,
+  );
+}
+
+function encodeDestAddresses(w: Writer, value: unknown, validateEnums = false): void {
   const list = (value ?? []) as DestAddress[];
   if (!Array.isArray(list) || list.length < 1 || list.length > 255) {
     throw new SmppValidationError(
@@ -485,6 +511,10 @@ function encodeDestAddresses(w: Writer, value: unknown): void {
   w.uint8('number_of_dests', list.length);
   for (const d of list) {
     if (d.dest_flag === 1) {
+      if (validateEnums) {
+        checkEnum('dest_addr_ton', d.dest_addr_ton);
+        checkEnum('dest_addr_npi', d.dest_addr_npi);
+      }
       w.uint8('dest_flag', 1);
       w.uint8('dest_addr_ton', d.dest_addr_ton ?? 0);
       w.uint8('dest_addr_npi', d.dest_addr_npi ?? 0);

@@ -44,8 +44,11 @@ export type {
   SmppServerOptions,
 } from './server/server.js';
 export { ServerSession } from './server/server-session.js';
+export type { TlsPeerInfo } from './server/server-session.js';
 export { BindFailureTracker, safeCompare } from './server/auth.js';
 export type { BindFailurePolicy } from './server/auth.js';
+export { ConnectionRateLimiter } from './server/limits.js';
+export type { ConnectionRatePolicy, ConnectionRateVerdict } from './server/limits.js';
 
 // Session
 export { Session } from './session/session.js';

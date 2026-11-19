@@ -276,6 +276,17 @@ new SmppClient({
 
 `rejectUnauthorized: false` is still possible, but every connection then logs a warning.
 
+**Client certificates (mTLS).** With `tls: { requestCert: true }`, the server hands the certificate to `authenticate()` as `ctx.tls` (`authorized`, `subject`, `issuer`, `fingerprint256`, `protocol`, `cipher`), so a bind can be granted on the certificate rather than on the password:
+
+```ts
+new SmppServer({
+  tls: { key, cert, ca: [clientCa], requestCert: true },   // rejectUnauthorized stays true
+  authenticate: ({ tls }) => tls?.authorized === true && tls.fingerprint256 === KNOWN_FINGERPRINT,
+});
+```
+
+With the default `rejectUnauthorized: true`, TLS refuses an unverified client before the bind. With `rejectUnauthorized: false`, every client reaches the hook but Node skips verification: `authorized` is then false even for a valid certificate, so pin `fingerprint256`.
+
 ### Long messages
 
 | `multipart.strategy` | Mechanism |
@@ -285,7 +296,9 @@ new SmppClient({
 | `sar` | `sar_msg_ref_num`, `sar_total_segments`, `sar_segment_seqnum` TLVs |
 | `payload` | A single PDU with `message_payload` |
 
-Splitting never breaks a GSM escape sequence or an emoji (UTF-16 surrogate pair). On receipt, segments are reassembled by (source, destination, reference), with a lifetime (`reassembly.ttl`, 5 min) and a maximum number of incomplete messages in memory (`reassembly.maxBuffers`, 1,000). On expiry, the `partialMessage` event delivers whatever was received.
+Splitting never breaks a GSM escape sequence or an emoji (UTF-16 surrogate pair). On receipt, segments are reassembled by (source, destination, reference), with a lifetime (`reassembly.ttl`, 5 min), a maximum number of incomplete messages in memory (`reassembly.maxBuffers`, 1,000) and a budget of content held (`reassembly.maxBytes`, 4 MiB). On expiry or eviction, the `partialMessage` event delivers whatever was received.
+
+`maxBuffers` alone does not bound memory: one buffer holds up to 255 segments, and a segment carried by `message_payload` can be as large as `maxPduLength`. `maxBytes` caps the total, evicting the oldest buffers first (`0` disables it).
 
 Each segment is billed as one SMS. `multipart.maxSegments` (or `maxSegments` per call) caps the number of segments: a longer text is rejected with a `SmppValidationError` (`ESME_RINVMSGLEN`) before anything is sent. Default: 255, the protocol maximum.
 
@@ -405,7 +418,9 @@ await server.deliver('system_id', { source_addr: '…', destination_addr: '…',
 - `maxSessions` and `maxSessionsPerIp` count every connection from the moment it is accepted, including those still sending their PROXY header or doing their TLS handshake. `maxSessionsPerSystemId` counts binds still being authenticated, so concurrent binds cannot exceed it.
 - `bindFailures` bans by IP. Brute force on one `system_id` from many addresses must be handled in `authenticate()` (with a shared store when several instances run).
 - Inbound window: at most `inboundWindow` (10) requests per session wait for their handler at the same time. Beyond that, reading pauses until a handler answers (`inboundWindowPolicy: 'pause'`, default), or extra requests get `ESME_RTHROTTLED` at once (`'throttle'`).
-- A peer that never reads its responses cannot grow memory: reading pauses while the write buffer is full, and the session is closed beyond `maxWriteBuffer` (1 MiB).
+- A peer that never reads its responses cannot grow memory: reading pauses while the write buffer is full, the session is closed beyond `maxWriteBuffer` (1 MiB), and the heaviest sessions are closed when every write buffer together passes `maxTotalWriteBuffer` (64 MiB).
+- Connections are rate-limited before a single byte is read (and before the TLS handshake): `connectionRate` defaults to 20 per second per address with a burst of 40, plus an optional total (`perSecond`). `connectionRate: false` turns it off. A refused connection emits `rejected`.
+- `bindFailures.maxEntries` (50,000) caps the addresses tracked for bans, so a flood from very many addresses cannot grow memory.
 - Proxy Protocol v1 and v2, off by default: `proxyProtocol: { trustedProxies: ['10.0.0.0/8'] }`. A PROXY header from an unlisted address is rejected.
 
 ## Utilities
@@ -484,6 +499,10 @@ if (pdu.command === 'submit_sm') pdu.short_message; // typed
 
 // Operator-specific TLVs
 const codec = new PduCodec({ customTlvs: [{ name: 'operator_ref', tag: 0x1501, type: 'cstring', max: 32 }] });
+
+// Catch an out-of-spec ton / npi / data_coding / esm_class locally instead of one round trip later.
+// Encoding only: incoming traffic really does carry values the specification does not list.
+const strict = new PduCodec({ validateEnums: true });
 ```
 
 ## Documentation

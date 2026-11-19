@@ -39,7 +39,7 @@ export interface InboundProcessorOptions {
   logger: Logger;
   packedGsm7?: boolean;
   messageIdFormat?: MessageIdFormat;
-  reassembly?: { ttl?: number; maxBuffers?: number };
+  reassembly?: { ttl?: number; maxBuffers?: number; maxBytes?: number };
   /** Receives every delivery receipt (multipart tracking). */
   tracker?: DeliveryTracker;
   /** Drops receipts and messages already processed (SMSC redeliveries). */
@@ -63,6 +63,7 @@ export class InboundProcessor {
     this.reassembler = new Reassembler({
       ...(options.reassembly?.ttl !== undefined ? { ttl: options.reassembly.ttl } : {}),
       ...(options.reassembly?.maxBuffers !== undefined ? { maxBuffers: options.reassembly.maxBuffers } : {}),
+      ...(options.reassembly?.maxBytes !== undefined ? { maxBytes: options.reassembly.maxBytes } : {}),
       registry: options.registry,
       onPartial: (msg) => this.sink.partialMessage(toInbound(msg)),
     });
